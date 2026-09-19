@@ -1,0 +1,59 @@
+services:
+  gost:
+    image: gogost/gost:3.3.0
+    command:
+      - -L
+      - http://:8080
+      - -F
+      - ${SOCKS5_PROXY_URL:?Set SOCKS5_PROXY_URL in .env}
+    restart: unless-stopped
+    read_only: true
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /.gost:rw,nosuid,nodev,noexec,size=1m,uid=65532,gid=65532,mode=0700
+    networks:
+      - codex
+      - internet
+
+  codex:
+    build:
+      context: ./docker/codex
+      args:
+        CODEX_VERSION: "0.154.0"
+    depends_on:
+      - gost
+    environment:
+      CODEX_HOME: /home/codex/.codex
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+      HTTP_PROXY: http://gost:8080
+      HTTPS_PROXY: http://gost:8080
+      ALL_PROXY: http://gost:8080
+      NO_PROXY: localhost,127.0.0.1,gost
+      http_proxy: http://gost:8080
+      https_proxy: http://gost:8080
+      all_proxy: http://gost:8080
+      no_proxy: localhost,127.0.0.1,gost
+    volumes:
+      - type: bind
+        source: ${CODEX_DATA_DIR:?Set CODEX_DATA_DIR in .env}
+        target: /home/codex/.codex
+    stdin_open: true
+    tty: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - codex
+
+networks:
+  codex:
+    internal: true
+  internet:
