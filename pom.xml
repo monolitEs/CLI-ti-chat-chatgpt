@@ -31,6 +31,7 @@
         <jacoco.version>0.8.15</jacoco.version>
         <jacoco.coverage.minimum>0.80</jacoco.coverage.minimum>
         <maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
+        <test.property>1</test.property>
     </properties>
     <dependencies>
         <dependency>
