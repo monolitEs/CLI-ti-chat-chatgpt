@@ -11,6 +11,10 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 import jakarta.annotation.PreDestroy;
+import lombok.extern.slf4j.Slf4j;
+import org.monolit.clitochatchatgpt.model.enums.CodexFailure;
+import org.monolit.clitochatchatgpt.model.exceptions.CodexException;
+import org.monolit.clitochatchatgpt.model.records.ActiveTurn;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -18,15 +22,17 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 @Component
+@Slf4j
 public class CodexAppServerClient {
 
     private final ObjectMapper json;
     private final ProcessStarter processStarter;
     private final AtomicLong requestIds = new AtomicLong();
 
-    private Process process;
-    private BufferedReader stdout;
-    private BufferedWriter stdin;
+    private volatile Process process;
+    private volatile BufferedReader stdout;
+    private volatile BufferedWriter stdin;
+    private volatile ActiveTurn activeTurn;
 
     @Autowired
     public CodexAppServerClient(ObjectMapper json, @Value("${codex.command:codex}") String command) {
@@ -40,7 +46,7 @@ public class CodexAppServerClient {
         this.processStarter = processStarter;
     }
 
-    public synchronized String chat(String message) {
+    public String chat(String requestId, String message) {
         ensureStarted();
         try {
             var threadRequestId = nextId();
@@ -60,17 +66,47 @@ public class CodexAppServerClient {
                     "params", Map.of(
                             "threadId", threadId,
                             "input", List.of(Map.of("type", "text", "text", message)))));
-            return readTurn(threadId, turnRequestId);
+            var turnResponse = readResponse(turnRequestId);
+            var turnId = requiredText(turnResponse, "/result/turn/id");
+            activeTurn = new ActiveTurn(threadId, turnId);
+            log.info("Codex turn started requestId={} threadId={} turnId={}",
+                    requestId, threadId, turnId);
+            var answer = readTurn(threadId);
+            log.info("Codex turn completed requestId={} threadId={} turnId={}",
+                    requestId, threadId, turnId);
+            return answer;
         } catch (IOException | RuntimeException exception) {
-            close();
+            reset();
+            log.warn("Codex turn failed requestId={} code={}", requestId,
+                    exception instanceof CodexException codexException
+                            ? codexException.kind() : CodexFailure.UNAVAILABLE);
             if (exception instanceof CodexException codexException) {
                 throw codexException;
             }
-            throw new CodexException("Codex App Server communication failed", exception);
+            throw new CodexException(CodexFailure.UNAVAILABLE,
+                    "Codex App Server communication failed", exception);
+        } finally {
+            activeTurn = null;
         }
     }
 
-    private void ensureStarted() {
+    public void interruptActiveTurn() {
+        var turn = activeTurn;
+        if (turn == null) {
+            reset();
+            return;
+        }
+        try {
+            send(Map.of(
+                    "method", "turn/interrupt",
+                    "id", nextId(),
+                    "params", Map.of("threadId", turn.threadId(), "turnId", turn.turnId())));
+        } catch (IOException | RuntimeException exception) {
+            reset();
+        }
+    }
+
+    private synchronized void ensureStarted() {
         if (process != null && process.isAlive()) {
             return;
         }
@@ -90,22 +126,32 @@ public class CodexAppServerClient {
                             "version", "0.0.1"))));
             readResponse(initializeId);
             send(Map.of("method", "initialized", "params", Map.of()));
+
+            var accountId = nextId();
+            send(Map.of(
+                    "method", "account/read",
+                    "id", accountId,
+                    "params", Map.of("refreshToken", false)));
+            var account = readResponse(accountId).path("result");
+            if (account.path("requiresOpenaiAuth").asBoolean()
+                    && (account.path("account").isMissingNode() || account.path("account").isNull())) {
+                throw new CodexException(CodexFailure.NOT_AUTHENTICATED,
+                        "Codex is not authenticated");
+            }
         } catch (IOException | RuntimeException exception) {
-            close();
-            throw new CodexException("Codex App Server failed to start", exception);
+            reset();
+            if (exception instanceof CodexException codexException) {
+                throw codexException;
+            }
+            throw new CodexException(CodexFailure.UNAVAILABLE,
+                    "Codex App Server failed to start", exception);
         }
     }
 
-    private String readTurn(String threadId, long turnRequestId) throws IOException {
+    private String readTurn(String threadId) throws IOException {
         String answer = null;
         while (true) {
             var message = readMessage();
-            if (message.path("id").canConvertToLong()
-                    && message.path("id").asLong() == turnRequestId
-                    && !message.path("error").isMissingNode()) {
-                throw new CodexException("Codex rejected turn/start");
-            }
-
             var method = text(message.path("method"));
             var params = message.path("params");
             if (!threadId.equals(text(params.path("threadId")))) {
@@ -118,7 +164,8 @@ public class CodexAppServerClient {
             if ("turn/completed".equals(method)) {
                 var status = text(params.path("turn").path("status"));
                 if (!"completed".equals(status) || answer == null) {
-                    throw new CodexException("Codex turn did not complete successfully");
+                    throw new CodexException(CodexFailure.TURN_FAILED,
+                            "Codex turn did not complete successfully");
                 }
                 return answer;
             }
@@ -132,31 +179,46 @@ public class CodexAppServerClient {
                 continue;
             }
             if (!message.path("error").isMissingNode()) {
-                throw new CodexException("Codex App Server rejected a request");
+                throw new CodexException(CodexFailure.UNAVAILABLE,
+                        "Codex App Server rejected a request");
             }
             return message;
         }
     }
 
     private JsonNode readMessage() throws IOException {
-        var line = stdout.readLine();
-        if (line == null) {
-            throw new CodexException("Codex App Server closed stdout");
+        var reader = stdout;
+        if (reader == null) {
+            throw new CodexException(CodexFailure.UNAVAILABLE, "Codex App Server is not running");
         }
-        return json.readTree(line);
+        var line = reader.readLine();
+        if (line == null) {
+            throw new CodexException(CodexFailure.UNAVAILABLE, "Codex App Server closed stdout");
+        }
+        try {
+            return json.readTree(line);
+        } catch (RuntimeException exception) {
+            throw new CodexException(CodexFailure.PROTOCOL,
+                    "Codex App Server returned malformed JSONL", exception);
+        }
     }
 
-    private void send(Object message) throws IOException {
-        stdin.write(json.writeValueAsString(message));
-        stdin.newLine();
-        stdin.flush();
+    private synchronized void send(Object message) throws IOException {
+        var writer = stdin;
+        if (writer == null) {
+            throw new IOException("Codex App Server stdin is closed");
+        }
+        writer.write(json.writeValueAsString(message));
+        writer.newLine();
+        writer.flush();
     }
 
     private static String requiredText(JsonNode node, String pointer) {
         var value = node.at(pointer);
         var text = value.stringValueOpt().orElse(null);
         if (text == null || text.isBlank()) {
-            throw new CodexException("Codex App Server response is missing " + pointer);
+            throw new CodexException(CodexFailure.PROTOCOL,
+                    "Codex App Server response is missing " + pointer);
         }
         return text;
     }
@@ -179,18 +241,19 @@ public class CodexAppServerClient {
         stdin = null;
     }
 
+    public synchronized void reset() {
+        if (process != null) {
+            process.destroyForcibly();
+        }
+        process = null;
+        stdout = null;
+        stdin = null;
+        activeTurn = null;
+    }
+
     @FunctionalInterface
     interface ProcessStarter {
         Process start() throws IOException;
     }
 
-    public static final class CodexException extends RuntimeException {
-        CodexException(String message) {
-            super(message);
-        }
-
-        CodexException(String message, Throwable cause) {
-            super(message, cause);
-        }
-    }
 }
