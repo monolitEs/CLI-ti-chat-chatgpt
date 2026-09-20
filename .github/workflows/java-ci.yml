@@ -1,0 +1,93 @@
+name: Java CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: [self-hosted, ci]
+
+    container:
+      image: maven:3.9.16-eclipse-temurin-21
+
+      options: >-
+        --memory=1400m
+        --cpus=1
+        --volume /srv/github-runner/ci/cache/m2:/root/.m2
+
+    env:
+      MAVEN_OPTS: >-
+        -Xms128m
+        -Xmx768m
+        -XX:MaxMetaspaceSize=256m
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Lint, tests and coverage
+        run: |
+            mvn \
+              --batch-mode \
+              --no-transfer-progress \
+              verify
+
+      - name: Coverage summary
+        if: always()
+        shell: bash
+        run: |
+          REPORT="target/site/jacoco/jacoco.csv"
+
+          echo "## Test coverage" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ ! -f "$REPORT" ]; then
+            echo "JaCoCo report not found." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          COVERAGE=$(
+            awk -F',' '
+              NR > 1 {
+                missed += $8
+                covered += $9
+              }
+              END {
+                total = missed + covered
+                if (total > 0)
+                  printf "%.2f", covered * 100 / total
+                else
+                  printf "0.00"
+              }
+            ' "$REPORT"
+          )
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Total line coverage: ${COVERAGE}%**" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "### Lowest covered classes" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Class | Coverage |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---:|" >> "$GITHUB_STEP_SUMMARY"
+
+          awk -F',' '
+            NR > 1 {
+              total = $8 + $9
+              if (total > 0) {
+                coverage = $9 * 100 / total
+                printf "%.4f\t%s.%s\n", coverage, $2, $3
+              }
+            }
+          ' "$REPORT" \
+            | sort -n \
+            | head -20 \
+            | awk -F'\t' '{
+                printf "| `%s` | %.2f%% |\n", $2, $1
+              }' \
+            >> "$GITHUB_STEP_SUMMARY"

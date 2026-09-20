@@ -28,6 +28,9 @@
     </scm>
     <properties>
         <java.version>21</java.version>
+        <jacoco.version>0.8.15</jacoco.version>
+        <jacoco.coverage.minimum>0.80</jacoco.coverage.minimum>
+        <maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
     </properties>
     <dependencies>
         <dependency>
@@ -66,6 +69,93 @@
                     </excludes>
                 </configuration>
             </plugin>
+
+            <!-- ============================== -->
+            <!-- Checkstyle -->
+            <!-- ============================== -->
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-checkstyle-plugin</artifactId>
+                <version>${maven-checkstyle-plugin.version}</version>
+
+                <configuration>
+                    <configLocation>google_checks.xml</configLocation>
+
+                    <consoleOutput>true</consoleOutput>
+                    <failOnViolation>true</failOnViolation>
+
+                    <includeTestSourceDirectory>true</includeTestSourceDirectory>
+                </configuration>
+
+                <executions>
+                    <execution>
+                        <id>checkstyle</id>
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+
+            <!-- ============================== -->
+            <!-- JaCoCo -->
+            <!-- ============================== -->
+
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+                <executions>
+                    <!-- Подключаем JaCoCo agent к тестам -->
+                    <execution>
+                        <id>jacoco-prepare-agent</id>
+
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <!-- Генерируем HTML/XML/CSV отчёт -->
+                    <execution>
+                        <id>jacoco-report</id>
+
+                        <phase>verify</phase>
+
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+
+                    <!-- Проверяем минимальное покрытие -->
+                    <execution>
+                        <id>jacoco-check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>
+                                                ${jacoco.coverage.minimum}
+                                            </minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+
+                </executions>
+            </plugin>
+
         </plugins>
     </build>
 
