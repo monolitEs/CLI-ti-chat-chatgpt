@@ -1,6 +1,25 @@
+FROM eclipse-temurin:21-jdk-jammy AS java-build
+
+WORKDIR /workspace
+
+COPY .mvn/ .mvn/
+COPY mvnw pom.xml ./
+RUN chmod 0755 mvnw && ./mvnw -B -DskipTests dependency:go-offline
+
+COPY src/ src/
+RUN ./mvnw -B -DskipTests package
+
+FROM eclipse-temurin:21-jre-jammy AS java-runtime
+
 FROM node:22.20.0-bookworm-slim
 
 ARG CODEX_VERSION=0.154.0
+
+ENV JAVA_HOME=/opt/java/openjdk
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+COPY --from=java-runtime /opt/java/openjdk /opt/java/openjdk
+COPY --from=java-build /workspace/target/CLI-to-chat-chatgpt-0.0.1-SNAPSHOT.jar /opt/app/chat-service.jar
 
 RUN set -eu; \
     apt-get update; \
@@ -57,10 +76,10 @@ RUN set -eu; \
       'set -eu' \
       'umask 077' \
       'cp /opt/codex/config.toml "${CODEX_HOME}/config.toml"' \
-      'if [ "$#" -eq 0 ]; then' \
-      '  exec codex --strict-config' \
+      'if [ "$#" -gt 0 ]; then' \
+      '  exec codex "$@"' \
       'fi' \
-      'exec codex "$@"' \
+      'exec java -jar /opt/app/chat-service.jar' \
       > /usr/local/bin/codex-chat; \
     chmod 0755 /usr/local/bin/codex-chat; \
     chown -R codex:codex /chat /home/codex
@@ -68,4 +87,5 @@ RUN set -eu; \
 USER codex
 WORKDIR /chat
 
+EXPOSE 8080
 ENTRYPOINT ["codex-chat"]

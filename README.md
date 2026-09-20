@@ -1,88 +1,121 @@
-# Codex CLI через SOCKS5-прокси
+# Минимальный чат-сервис через Codex CLI
 
 Compose запускает два сервиса:
 
-- `gost` — переводит HTTP proxy-запросы Codex в личный SOCKS5;
-- `codex` — Codex CLI в режиме интерактивного чата.
+- `codex` — Spring Boot REST API и дочерний `codex app-server`;
+- `gost` — переводит HTTP proxy-запросы Codex в личный SOCKS5.
 
-Проекты и документы хоста в контейнер Codex не подключаются. Авторизация
-ChatGPT и история сохраняются в папке `CODEX_DATA_DIR`.
+Исходящие запросы Codex настроены на GOST через системные proxy-переменные. API
+опубликован только на loopback хоста, а другой контейнер обращается к нему через
+сеть `cli-to-chat`.
 
 ## Настройка
 
-Если `.env` ещё не существует, создайте его из примера:
+Создайте локальный `.env` из примера:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Заполните в `.env` две переменные:
+Заполните две переменные:
 
 ```dotenv
 SOCKS5_PROXY_URL='socks5://username:password@proxy.example.com:1080'
 CODEX_DATA_DIR='D:/Documents/codex-chat-data'
 ```
 
-Спецсимволы в имени пользователя и пароле должны быть закодированы как URL
-percent-escapes. Не добавляйте `.env` в Git и не публикуйте вывод
-`docker compose config` или `docker inspect`: в нём могут оказаться credentials.
+Спецсимволы в имени пользователя и пароле кодируются как URL percent-escapes.
+Не добавляйте `.env` в Git и не публикуйте вывод `docker compose config` или
+`docker inspect`: в нём могут находиться credentials.
 
-## Первый запуск
-
-Соберите образ Codex:
+## Сборка и вход через ChatGPT
 
 ```powershell
 docker compose build codex
-```
-
-Выполните вход через ChatGPT по device-коду:
-
-```powershell
 docker compose run --rm codex login --device-auth
+docker compose run --rm codex login status
 ```
 
-После успешного входа откройте чат:
+Авторизация и данные Codex сохраняются в `CODEX_DATA_DIR`. Проекты и документы
+хоста в контейнер не подключаются.
+
+## Запуск сервиса
 
 ```powershell
-docker compose run --rm codex
+docker compose up -d
+docker compose ps
 ```
 
-Команда `docker compose run` сама запускает зависимый сервис `gost`.
+Spring Boot запускается по умолчанию. API доступен на рабочей машине по адресу
+`http://localhost:8080` и контейнерам сети `cli-to-chat` по адресу
+`http://codex:8080`. Binding `127.0.0.1:8080` не публикует API во внешнюю сеть.
+Сетевая изоляция не блокирует direct egress: соблюдение proxy обеспечивают
+`respect_system_proxy = true` и переменные `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`.
 
-## Последующие запуски
-
-Для нового сеанса чата достаточно:
+Проверка с хоста в PowerShell:
 
 ```powershell
-docker compose run --rm codex
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://localhost:8080/api/chat `
+  -ContentType 'application/json' `
+  -Body '{"message":"Привет"}'
 ```
 
-`docker compose up -d` запускает Codex в фоне и поэтому не подходит для работы
-с интерактивным терминальным интерфейсом.
+## Подключение контейнера-потребителя
 
-## Остановка
+В другом Compose-проекте подключите сервис-потребитель к существующей сети:
 
-После завершения чата остановите GOST и удалите созданные Compose-сети:
+```yaml
+services:
+  consumer:
+    networks:
+      - cli-to-chat
+
+networks:
+  cli-to-chat:
+    external: true
+    name: cli-to-chat
+```
+
+После подключения endpoint доступен по имени сервиса:
+
+```text
+POST http://codex:8080/api/chat
+Content-Type: application/json
+
+{"message":"Привет"}
+```
+
+Успешный ответ:
+
+```json
+{"requestId":"...","answer":"..."}
+```
+
+Одновременно обрабатывается один запрос. Второй получает `409 CHAT_BUSY`.
+Общий timeout ответа — 10 минут. Известные отказы Codex возвращаются как
+контролируемые `502`, `503` или `504` с `requestId`.
+
+## Остановка и откат
 
 ```powershell
 docker compose down
 ```
 
-Эта команда сохраняет `.env` и содержимое `CODEX_DATA_DIR`.
+Команда удаляет контейнеры и Compose-сети, но сохраняет `.env` и содержимое
+`CODEX_DATA_DIR`. Для отката образа верните предыдущие Dockerfile/Compose/README
+и пересоберите `codex`; папку авторизации удалять не нужно.
 
 ## Диагностика
 
-Состояние сервисов:
-
 ```powershell
 docker compose ps
-```
-
-Последние сообщения GOST:
-
-```powershell
+docker compose logs --tail 100 codex
 docker compose logs --tail 50 gost
 ```
 
-Если авторизация или чат не подключаются, проверьте доступность SOCKS5,
-credentials и percent-encoding спецсимволов в `SOCKS5_PROXY_URL`.
+Логи приложения содержат request/thread/turn ID, длительность и нормализованный
+код ошибки. Текст запроса, ответ, auth tokens и SOCKS5 credentials приложение не
+логирует. Если авторизация или запрос не работают, проверьте ChatGPT login,
+доступность SOCKS5 и percent-encoding в `SOCKS5_PROXY_URL`.

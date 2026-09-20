@@ -21,7 +21,8 @@ services:
 
   codex:
     build:
-      context: ./docker/codex
+      context: .
+      dockerfile: docker/codex/Dockerfile
       args:
         CODEX_VERSION: "0.154.0"
     depends_on:
@@ -41,8 +42,10 @@ services:
       - type: bind
         source: ${CODEX_DATA_DIR:?Set CODEX_DATA_DIR in .env}
         target: /home/codex/.codex
-    stdin_open: true
-    tty: true
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=64m
@@ -55,5 +58,5 @@ services:
 
 networks:
   codex:
-    internal: true
+    name: cli-to-chat
   internet:
