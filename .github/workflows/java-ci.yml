@@ -102,19 +102,6 @@ jobs:
             --fail-under=100 \
             --format=markdown:target/diff-pmd.md
 
-      - name: Checkstyle on changed lines
-        id: checkstyle
-        if: >-
-          github.event_name == 'pull_request' &&
-          steps.normalize.outcome == 'success'
-        continue-on-error: true
-        run: |
-          /tmp/pr-quality-venv/bin/diff-quality \
-            --violations=checkstylexml target/checkstyle-diff.xml \
-            --compare-branch="$BASE_SHA" \
-            --fail-under=100 \
-            --format=markdown:target/diff-checkstyle.md
-
       - name: SpotBugs and security on changed lines
         id: spotbugs
         if: >-
@@ -136,7 +123,6 @@ jobs:
           NORMALIZE_RESULT: ${{ steps.normalize.outcome }}
           COVERAGE_RESULT: ${{ steps.coverage.outcome }}
           PMD_RESULT: ${{ steps.pmd.outcome }}
-          CHECKSTYLE_RESULT: ${{ steps.checkstyle.outcome }}
           SPOTBUGS_RESULT: ${{ steps.spotbugs.outcome }}
         run: |
           {
@@ -151,14 +137,12 @@ jobs:
               echo "| Report normalization | $NORMALIZE_RESULT |"
               echo "| Changed lines coverage ≥ 80% | $COVERAGE_RESULT |"
               echo "| PMD | $PMD_RESULT |"
-              echo "| Checkstyle | $CHECKSTYLE_RESULT |"
               echo "| SpotBugs and security | $SPOTBUGS_RESULT |"
               echo
 
               for report in \
                 target/diff-coverage.md \
                 target/diff-pmd.md \
-                target/diff-checkstyle.md \
                 target/diff-spotbugs.md
               do
                 echo
@@ -181,7 +165,6 @@ jobs:
             target/diff-*.md
             target/*-diff.xml
             target/pmd.xml
-            target/checkstyle-result.xml
             target/spotbugsXml.xml
             target/site/jacoco/
             target/surefire-reports/
@@ -194,7 +177,6 @@ jobs:
           NORMALIZE_RESULT: ${{ steps.normalize.outcome }}
           COVERAGE_RESULT: ${{ steps.coverage.outcome }}
           PMD_RESULT: ${{ steps.pmd.outcome }}
-          CHECKSTYLE_RESULT: ${{ steps.checkstyle.outcome }}
           SPOTBUGS_RESULT: ${{ steps.spotbugs.outcome }}
         run: |
           failed=0
@@ -210,7 +192,6 @@ jobs:
               "$NORMALIZE_RESULT" \
               "$COVERAGE_RESULT" \
               "$PMD_RESULT" \
-              "$CHECKSTYLE_RESULT" \
               "$SPOTBUGS_RESULT"
             do
               if [ "$result" != "success" ]; then

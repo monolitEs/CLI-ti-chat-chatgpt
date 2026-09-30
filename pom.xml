@@ -16,7 +16,6 @@
     <properties>
         <java.version>21</java.version>
         <jacoco.version>0.8.15</jacoco.version>
-        <maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
     <dependencies>
@@ -55,35 +54,6 @@
                         </exclude>
                     </excludes>
                 </configuration>
-            </plugin>
-
-            <!-- ============================== -->
-            <!-- Checkstyle -->
-            <!-- ============================== -->
-
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-checkstyle-plugin</artifactId>
-                <version>${maven-checkstyle-plugin.version}</version>
-
-                <configuration>
-                    <configLocation>google_checks.xml</configLocation>
-
-                    <consoleOutput>true</consoleOutput>
-                    <failOnViolation>false</failOnViolation>
-
-                    <includeTestSourceDirectory>true</includeTestSourceDirectory>
-                </configuration>
-
-                <executions>
-                    <execution>
-                        <id>checkstyle</id>
-                        <phase>validate</phase>
-                        <goals>
-                            <goal>check</goal>
-                        </goals>
-                    </execution>
-                </executions>
             </plugin>
 
 

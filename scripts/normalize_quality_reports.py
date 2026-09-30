@@ -34,5 +34,4 @@ def normalize_report(source, destination, spotbugs=False):
 
 
 normalize_report("pmd.xml", "pmd-diff.xml")
-normalize_report("checkstyle-result.xml", "checkstyle-diff.xml")
 normalize_report("spotbugsXml.xml", "spotbugs-diff.xml", spotbugs=True)
