@@ -43,6 +43,9 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
+      - name: Trust workspace directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Fetch PR base
         if: github.event_name == 'pull_request'
         run: git fetch --no-tags origin "$BASE_SHA"
