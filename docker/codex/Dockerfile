@@ -13,7 +13,7 @@ FROM eclipse-temurin:21-jre-jammy AS java-runtime
 
 FROM node:22.20.0-bookworm-slim
 
-ARG CODEX_VERSION=0.154.0
+ARG CODEX_VERSION=0.159.3
 
 ENV JAVA_HOME=/opt/java/openjdk
 ENV PATH="${JAVA_HOME}/bin:${PATH}"

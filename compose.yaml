@@ -23,8 +23,6 @@ services:
     build:
       context: .
       dockerfile: docker/codex/Dockerfile
-      args:
-        CODEX_VERSION: "0.154.0"
     depends_on:
       - gost
     environment:
