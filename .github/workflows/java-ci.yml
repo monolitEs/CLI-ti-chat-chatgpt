@@ -212,6 +212,7 @@ jobs:
           COVERAGE_RESULT: ${{ steps.coverage.outcome }}
           SECURITY_RESULT: ${{ steps.security.outcome }}
           SYNAPSE_RESULT: ${{ steps.synapse.outcome }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           {
             echo "## PR Quality"
@@ -236,6 +237,149 @@ jobs:
               fi
             done
           } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            exit 0
+          fi
+
+          mkdir -p target
+          if ! synapse-cli quality . --sarif \
+            > target/synapse-quality.sarif
+          then
+            echo >> "$GITHUB_STEP_SUMMARY"
+            echo "Detailed code-quality report unavailable: see logs." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import html
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+          from urllib.parse import quote, unquote, urlsplit
+
+          root = Path.cwd().resolve()
+          diff = subprocess.check_output(
+              [
+                  "git", "-c", "core.quotePath=false", "diff",
+                  "--relative", "--unified=0", "--no-color",
+                  "--no-ext-diff", "--no-textconv", "--diff-filter=d",
+                  "--end-of-options", os.environ["BASE_SHA"], "--", ".",
+              ],
+              text=True,
+          )
+
+          changed = {}
+          path = None
+          for line in diff.splitlines():
+              if line.startswith("+++ b/"):
+                  path = line[6:]
+              elif line.startswith("+++ "):
+                  path = None
+              elif path and line.startswith("@@"):
+                  match = re.match(
+                      r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@",
+                      line,
+                  )
+                  if match:
+                      start = int(match[1])
+                      count = int(match[2]) if match[2] is not None else 1
+                      changed.setdefault(path, set()).update(
+                          range(start, start + count)
+                      )
+
+          def cell(value):
+              value = " ".join(str(value).split())
+              return html.escape(value).replace("|", "&#124;")
+
+          def source_path(uri):
+              parsed = urlsplit(uri)
+              if parsed.scheme not in ("", "file"):
+                  return None
+              value = unquote(parsed.path).replace("\\", "/")
+              candidate = Path(value)
+              if candidate.is_absolute():
+                  try:
+                      value = candidate.resolve().relative_to(root).as_posix()
+                  except ValueError:
+                      return None
+              return value.removeprefix("./")
+
+          report = json.loads(
+              Path("target/synapse-quality.sarif").read_text()
+          )
+          findings = set()
+
+          for run in report.get("runs", []):
+              rules = run.get("tool", {}).get("driver", {}).get("rules", [])
+              artifacts = run.get("artifacts", [])
+
+              for result in run.get("results", []):
+                  rule = result.get("ruleId")
+                  index = result.get("ruleIndex")
+                  if not rule and isinstance(index, int):
+                      if 0 <= index < len(rules):
+                          rule = rules[index].get("id")
+
+                  message = result.get("message", {})
+                  description = (
+                      message.get("text") or message.get("markdown", "")
+                  )
+
+                  for location in result.get("locations", []):
+                      physical = location.get("physicalLocation", {})
+                      artifact = physical.get("artifactLocation", {})
+                      uri = artifact.get("uri")
+                      index = artifact.get("index")
+
+                      if not uri and isinstance(index, int):
+                          if 0 <= index < len(artifacts):
+                              uri = (
+                                  artifacts[index]
+                                  .get("location", {})
+                                  .get("uri")
+                              )
+                      if not uri:
+                          continue
+
+                      path = source_path(uri)
+                      number = physical.get("region", {}).get("startLine")
+
+                      if number in changed.get(path, set()):
+                          findings.add((
+                              path,
+                              number,
+                              rule or "",
+                              result.get("level", ""),
+                              description,
+                          ))
+
+          print("\n## Code-quality findings on changed lines\n")
+
+          if not findings:
+              print("No code-quality findings on changed lines.")
+          else:
+              print("| File and line | Level | Rule | Description |")
+              print("|---|---|---|---|")
+
+              base = (
+                  f'{os.environ["GITHUB_SERVER_URL"]}/'
+                  f'{os.environ["GITHUB_REPOSITORY"]}/blob/'
+                  f'{os.environ["HEAD_SHA"]}'
+              )
+
+              for path, number, rule, level, description in sorted(findings):
+                  url = f"{base}/{quote(path, safe='/')}#L{number}"
+                  label = cell(f"{path}:{number}")
+                  label = label.replace("[", "&#91;").replace("]", "&#93;")
+                  print(
+                      f"| [{label}]({url}) | {cell(level)} | "
+                      f"{cell(rule)} | {cell(description)} |"
+                  )
+          PY
 
       - name: Upload reports
         if: always()
