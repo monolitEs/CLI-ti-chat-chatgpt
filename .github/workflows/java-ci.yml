@@ -73,11 +73,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          case "$(uname -m)" in
-            x86_64) arch=amd64 ;;
-            aarch64|arm64) arch=arm64 ;;
-            *) echo "::error::Unsupported architecture"; exit 1 ;;
-          esac
+          arch=amd64
 
           version="${SYNAPSE_VERSION#v}"
           asset="synapse-cli_${version}_linux_${arch}.tar.gz"
