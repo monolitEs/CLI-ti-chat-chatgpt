@@ -1,9 +1,7 @@
 # Минимальный чат-сервис через Codex CLI
 
-Compose запускает два сервиса:
-
-- `codex` — Spring Boot REST API и дочерний `codex app-server`;
-- `gost` — переводит HTTP proxy-запросы Codex в личный SOCKS5.
+Compose запускает `codex` — Spring Boot REST API и дочерний `codex app-server`.
+GOST запускается отдельно и переводит HTTP proxy-запросы Codex в личный SOCKS5.
 
 Исходящие запросы Codex настроены на GOST через системные proxy-переменные. API
 опубликован только на loopback хоста, а другой контейнер обращается к нему через
@@ -20,13 +18,21 @@ Copy-Item .env.example .env
 Заполните две переменные:
 
 ```dotenv
-SOCKS5_PROXY_URL='socks5://username:password@proxy.example.com:1080'
+PROXY_NETWORK_NAME='proxy-project_proxy'
 CODEX_DATA_DIR='D:/Documents/codex-chat-data'
 ```
 
-Спецсимволы в имени пользователя и пароле кодируются как URL percent-escapes.
-Не добавляйте `.env` в Git и не публикуйте вывод `docker compose config` или
-`docker inspect`: в нём могут находиться credentials.
+Заранее создайте папку `CODEX_DATA_DIR` и предоставьте пользователю контейнера
+UID 10001 права чтения/записи. Compose не создаёт отсутствующую папку автоматически.
+
+`PROXY_NETWORK_NAME` — точное имя существующей Docker-сети внешнего GOST;
+`proxy-project_proxy` — пример, замените его своим значением. Ключ `proxy` в
+его Compose не обязательно совпадает с фактическим именем сети.
+GOST должен быть заранее запущен в этой сети с именем сервиса `gost` и HTTP
+listener на порту `8080`. Codex обращается к `http://gost:8080`; опубликованный
+на хосте порт `3128` для этого подключения не используется.
+SOCKS5 URL и credentials настраиваются только в отдельном проекте GOST.
+Не добавляйте `.env` в Git и не публикуйте auth или credentials.
 
 ## Сборка и вход через ChatGPT
 
@@ -51,6 +57,7 @@ Spring Boot запускается по умолчанию. API доступен
 `http://codex:8080`. Binding `127.0.0.1:8080` не публикует API во внешнюю сеть.
 Сетевая изоляция не блокирует direct egress: соблюдение proxy обеспечивают
 `respect_system_proxy = true` и переменные `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`.
+API `http://codex:8080` доступен также другим участникам внешней proxy-сети.
 
 Проверка с хоста в PowerShell:
 
@@ -97,6 +104,61 @@ Content-Type: application/json
 Общий timeout ответа — 10 минут. Известные отказы Codex возвращаются как
 контролируемые `502`, `503` или `504` с `requestId`.
 
+## Автоматический деплой через GitHub Actions
+
+Workflow `Deploy` запускается при каждом push в `main`, независимо от `Java CI`.
+Он скачивает commit этого push, собирает `codex`, запускает его и проверяет API.
+Если сборка завершается ошибкой, шаг запуска не выполняется. Dockerfile собирает
+приложение с пропуском тестов; результат Java CI не блокирует deployment.
+Build и запуск выполняются на Docker daemon вашей машины. Раннер и временный
+Ubuntu-контейнер `ghcr.io/catthehacker/ubuntu:act-24.04` с готовыми
+Docker CLI/Compose работают через Docker socket хоста.
+Инструменты деплоя не попадают в итоговый образ приложения; Dockerfile прежний.
+
+В GitHub → Settings → Secrets and variables → Actions настройте:
+
+| Тип | Имя | Значение |
+| --- | --- | --- |
+| Variable | `PROXY_NETWORK_NAME` | Точное имя существующей сети внешнего GOST |
+| Variable | `CODEX_DATA_DIR` | Абсолютный путь на Linux-хосте, например `/srv/cli-to-chat/codex-data` |
+| Variable | `COMPOSE_PROJECT_NAME` | Необязательно; по умолчанию `cli-to-chat-chatgpt` |
+
+Раннер должен иметь labels `self-hosted`, `ci`, доступ к
+`/var/run/docker.sock` хоста и поддерживать обычные job containers, как в Java CI.
+Его workspace должен быть доступен этим контейнерам через mounts раннера.
+Job получает socket; одноразовый `curlimages/curl:8.22.0` с `--network host`
+проверяет HTTP через loopback хоста. Сам job остаётся в сети GitHub runner.
+Для получения job image и сборки нужен выход к GitHub/GHCR, Maven Central,
+npm и Docker image registry.
+
+Папку данных заранее создайте **на хосте**, вне workspace раннера, с доступом
+UID 10001. Сохранённый ChatGPT login должен находиться в этой папке; для первого
+входа используйте ручную процедуру выше с тем же host path. Workflow проверяет
+наличие папки, не читает auth-файлы и не выполняет отдельные login/refresh-команды.
+Для существующей установки `COMPOSE_PROJECT_NAME` должен совпадать с прежним
+именем проекта: это исключает запуск второго stack с тем же портом и сетью.
+
+CD не использует `.env`: настройки передаются через GitHub Variables.
+Workflow проверяет наличие внешней сети и папки данных, собирает и обновляет
+только `codex`. Внешний GOST и его SOCKS5 secret не входят в этот deployment.
+Деплои выполняются последовательно, без отмены текущего. Образ сначала собирается,
+затем `up -d --no-build` пересоздаёт изменённые контейнеры; возможен короткий перерыв.
+Предварительного `down`, удаления auth и автоматического rollback нет.
+
+После запуска CD ждёт HTTP `400 MESSAGE_REQUIRED` на пустой POST `/api/chat`.
+Это проверяет доступность Java API, но не ChatGPT login, SOCKS5 и ответ модели.
+После первого push проверьте Actions → Deploy и выполните обычный запрос чата.
+
+При ошибке установки/build работающий сервис не заменяется. При ошибке up/smoke
+возможен частичный deployment: проверьте статус контейнеров на хосте и HTTP ответ.
+SHA и результат smoke видны в Actions summary. Не отправляйте runtime logs в
+Actions автоматически: CLI/proxy могут содержать чувствительные данные.
+Для отката верните предыдущий код новым commit в `main`: push запустит CD.
+Повторный запуск старого `Deploy` также может задеплоить старый commit:
+проверки актуальности `main` больше нет.
+Чтобы отключить автоматический deployment, отключите workflow `Deploy` в Actions.
+`CODEX_DATA_DIR` при отключении/откате сохраняется.
+
 ## Остановка и откат
 
 ```powershell
@@ -104,18 +166,25 @@ docker compose down
 ```
 
 Команда удаляет контейнеры и Compose-сети, но сохраняет `.env` и содержимое
-`CODEX_DATA_DIR`. Для отката образа верните предыдущие Dockerfile/Compose/README
-и пересоберите `codex`; папку авторизации удалять не нужно.
+`CODEX_DATA_DIR`. Внешняя proxy-сеть и GOST сохраняются. Для отката приложения
+верните предыдущий код с подключением к внешней сети и пересоберите `codex`;
+папку авторизации удалять не нужно. Откат приложения не откатывает внешний proxy.
+
+Если здесь раньше запускался локальный `gost`, после удаления из Compose он
+может остаться orphan-контейнером. Проверьте старый stack и остановите только
+прежний локальный GOST вручную. CD не применяет `--remove-orphans`; внешний
+GOST должен продолжать работать. Старый Compose с собственным GOST нельзя
+возвращать без проверки портов, сети и владения proxy.
 
 ## Диагностика
 
 ```powershell
 docker compose ps
 docker compose logs --tail 100 codex
-docker compose logs --tail 50 gost
 ```
 
 Логи приложения содержат request/thread/turn ID, длительность и нормализованный
 код ошибки. Текст запроса, ответ, auth tokens и SOCKS5 credentials приложение не
 логирует. Если авторизация или запрос не работают, проверьте ChatGPT login,
-доступность SOCKS5 и percent-encoding в `SOCKS5_PROXY_URL`.
+имя внешней сети и доступность `gost:8080`. SOCKS5 и логи GOST проверяйте
+в отдельном проекте proxy. Успешный HTTP smoke CD не доказывает работу proxy.

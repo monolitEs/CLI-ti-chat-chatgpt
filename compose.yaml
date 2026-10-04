@@ -1,30 +1,8 @@
 services:
-  gost:
-    image: gogost/gost:3.3.0
-    command:
-      - -L
-      - http://:8080
-      - -F
-      - ${SOCKS5_PROXY_URL:?Set SOCKS5_PROXY_URL in .env}
-    restart: unless-stopped
-    read_only: true
-    user: "65532:65532"
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /.gost:rw,nosuid,nodev,noexec,size=1m,uid=65532,gid=65532,mode=0700
-    networks:
-      - codex
-      - internet
-
   codex:
     build:
       context: .
       dockerfile: docker/codex/Dockerfile
-    depends_on:
-      - gost
     environment:
       CODEX_HOME: /home/codex/.codex
       SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
@@ -40,6 +18,8 @@ services:
       - type: bind
         source: ${CODEX_DATA_DIR:?Set CODEX_DATA_DIR in .env}
         target: /home/codex/.codex
+        bind:
+          create_host_path: false
     init: true
     restart: unless-stopped
     ports:
@@ -53,8 +33,11 @@ services:
       - no-new-privileges:true
     networks:
       - codex
+      - proxy
 
 networks:
   codex:
     name: cli-to-chat
-  internet:
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK_NAME:?Set PROXY_NETWORK_NAME to the existing GOST network}

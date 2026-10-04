@@ -1,0 +1,80 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-to-chat-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, ci]
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/catthehacker/ubuntu:act-24.04
+      options: --volume /var/run/docker.sock:/var/run/docker.sock
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEPLOY_SHA: ${{ github.sha }}
+      CODEX_DATA_DIR: ${{ vars.CODEX_DATA_DIR }}
+      PROXY_NETWORK_NAME: ${{ vars.PROXY_NETWORK_NAME }}
+      COMPOSE_PROJECT_NAME: ${{ vars.COMPOSE_PROJECT_NAME || 'cli-to-chat-chatgpt' }}
+      COMPOSE_ENV_FILES: /dev/null
+      COMPOSE_DISABLE_ENV_FILE: "1"
+      DOCKER_HOST: unix:///var/run/docker.sock
+
+    steps:
+      - name: Checkout pushed commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Check host data directory and build
+        run: |
+          set -euo pipefail
+          : "${PROXY_NETWORK_NAME:?Set GitHub variable PROXY_NETWORK_NAME}"
+          docker network inspect --format '{{.Name}}' "$PROXY_NETWORK_NAME" > /dev/null
+          if [[ "$CODEX_DATA_DIR" != /* || "$CODEX_DATA_DIR" == / || "$CODEX_DATA_DIR" == *,* ]]; then
+            echo "::error::CODEX_DATA_DIR must be an absolute host directory outside the runner workspace."
+            exit 1
+          fi
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --mount "type=bind,source=$CODEX_DATA_DIR,target=/auth-check,readonly" \
+            ubuntu:24.04 test -d /auth-check
+          docker compose --env-file /dev/null -f compose.yaml config --quiet
+          docker compose --env-file /dev/null -f compose.yaml build codex
+          docker pull curlimages/curl:8.22.0
+
+      - name: Deploy
+        run: |
+          set -euo pipefail
+          docker compose --env-file /dev/null -f compose.yaml up -d --no-build --wait --wait-timeout 60
+
+      - name: Check API
+        run: |
+          set -euo pipefail
+          for attempt in {1..30}; do
+            response=$(docker run --rm --network host --read-only --cap-drop ALL \
+              --security-opt no-new-privileges:true curlimages/curl:8.22.0 \
+              -s --connect-timeout 2 --max-time 3 -w '\n%{http_code}' \
+              -H 'Content-Type: application/json' -d '{}' \
+              http://127.0.0.1:8080/api/chat) || response=$'\n000'
+            status=${response##*$'\n'}
+            body=${response%$'\n'*}
+            if [ "$status" = 400 ] && printf '%s' "$body" | jq -e '.code == "MESSAGE_REQUIRED"' > /dev/null; then
+              echo "Deployed $DEPLOY_SHA; API validation smoke passed." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::API smoke failed; check Compose status on the host. Automatic rollback is disabled."
+          exit 1
