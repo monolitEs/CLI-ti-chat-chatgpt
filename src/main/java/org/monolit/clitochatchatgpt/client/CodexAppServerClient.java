@@ -27,6 +27,7 @@ public class CodexAppServerClient {
 
     private final ObjectMapper json;
     private final ProcessStarter processStarter;
+    private final ConversationStore conversations;
     private final AtomicLong requestIds = new AtomicLong();
 
     private volatile Process process;
@@ -35,29 +36,31 @@ public class CodexAppServerClient {
     private volatile ActiveTurn activeTurn;
 
     @Autowired
-    public CodexAppServerClient(ObjectMapper json, @Value("${codex.command:codex}") String command) {
+    public CodexAppServerClient(ObjectMapper json, @Value("${codex.command:codex}") String command,
+            ConversationStore conversations) {
         this(json, () -> new ProcessBuilder(command, "app-server", "--strict-config")
                 .redirectError(ProcessBuilder.Redirect.INHERIT)
-                .start());
+                .start(), conversations);
     }
 
     CodexAppServerClient(ObjectMapper json, ProcessStarter processStarter) {
+        this(json, processStarter, null);
+    }
+
+    CodexAppServerClient(ObjectMapper json, ProcessStarter processStarter, ConversationStore conversations) {
         this.json = json;
         this.processStarter = processStarter;
+        this.conversations = conversations;
     }
 
     public String chat(String requestId, String message) {
+        return chat(requestId, message, null);
+    }
+
+    public String chat(String requestId, String message, String conversationId) {
         ensureStarted();
         try {
-            var threadRequestId = nextId();
-            send(Map.of(
-                    "method", "thread/start",
-                    "id", threadRequestId,
-                    "params", Map.of(
-                            "serviceName", "cli_to_chat_chatgpt",
-                            "ephemeral", true)));
-            var threadResponse = readResponse(threadRequestId);
-            var threadId = requiredText(threadResponse, "/result/thread/id");
+            var threadId = prepareThread(conversationId);
 
             var turnRequestId = nextId();
             send(Map.of(
@@ -87,6 +90,34 @@ public class CodexAppServerClient {
                     "Codex App Server communication failed", exception);
         } finally {
             activeTurn = null;
+        }
+    }
+
+    private String prepareThread(String conversationId) throws IOException {
+        var storedId = conversationId == null ? null : conversations.find(conversationId);
+        var threadRequestId = nextId();
+        if (storedId != null) {
+            send(Map.of("method", "thread/resume", "id", threadRequestId,
+                    "params", Map.of("threadId", storedId)));
+            var resumedId = requiredText(readResponse(threadRequestId), "/result/thread/id");
+            if (!storedId.equals(resumedId)) {
+                throw new CodexException(CodexFailure.PROTOCOL, "Resumed thread ID does not match");
+            }
+            return resumedId;
+        } else {
+            send(Map.of(
+                    "method", "thread/start",
+                    "id", threadRequestId,
+                    "params", Map.of(
+                            "serviceName", "cli_to_chat_chatgpt",
+                            "ephemeral", conversationId == null)));
+            var threadResponse = readResponse(threadRequestId);
+            var threadId = requiredText(threadResponse, "/result/thread/id");
+
+            if (conversationId != null) {
+                conversations.save(conversationId, threadId);
+            }
+            return threadId;
         }
     }
 

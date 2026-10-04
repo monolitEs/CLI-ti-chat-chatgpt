@@ -2,6 +2,8 @@ package org.monolit.clitochatchatgpt.controller;
 
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -34,7 +36,7 @@ class ChatControllerTests {
 
     @Test
     void returnsCodexAnswerWithServerRequestId() throws Exception {
-        when(chatService.chat(anyString(), eq("Hello"))).thenReturn("Hi");
+        when(chatService.chat(anyString(), eq("Hello"), isNull())).thenReturn("Hi");
 
         mvc.perform(post("/api/chat")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -59,7 +61,7 @@ class ChatControllerTests {
     @MethodSource("failures")
     void mapsChatFailuresWithoutLeakingDetails(ChatFailure failure,
             int statusCode, String code) throws Exception {
-        when(chatService.chat(anyString(), eq("Hello")))
+        when(chatService.chat(anyString(), eq("Hello"), isNull()))
                 .thenThrow(new ChatException(failure,
                         new IllegalStateException("sensitive detail")));
 
@@ -79,5 +81,38 @@ class ChatControllerTests {
                         "CODEX_NOT_AUTHENTICATED"),
                 Arguments.of(ChatFailure.UNAVAILABLE, 503, "CODEX_UNAVAILABLE"),
                 Arguments.of(ChatFailure.TIMEOUT, 504, "CODEX_TIMEOUT"));
+    }
+
+    @Test
+    void forwardsConversationIdWithoutChangingResponse() throws Exception {
+        when(chatService.chat(anyString(), eq("Hello"), eq("vk:peer:session"))).thenReturn("Remembered");
+        mvc.perform(post("/api/chat").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"message\":\"Hello\",\"conversationId\":\"vk:peer:session\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.answer").value("Remembered"))
+                .andExpect(jsonPath("$.conversationId").doesNotExist());
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidIds")
+    void rejectsInvalidConversationIdWithoutCallingService(String id) throws Exception {
+        mvc.perform(post("/api/chat").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"message\":\"Hello\",\"conversationId\":" + id + "}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(header().exists(ChatController.REQUEST_ID_HEADER))
+                .andExpect(jsonPath("$.code").value("CONVERSATION_ID_INVALID"));
+        verifyNoInteractions(chatService);
+    }
+
+    private static Stream<String> invalidIds() {
+        return Stream.of("\"\"", "\"  \"", "123", "true", "[]", "{}", "\"" + "a".repeat(257) + "\"");
+    }
+
+    @Test
+    void acceptsNullConversationIdAsOneShot() throws Exception {
+        when(chatService.chat(anyString(), eq("Hello"), isNull())).thenReturn("Hi");
+        mvc.perform(post("/api/chat").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"message\":\"Hello\",\"conversationId\":null}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.answer").value("Hi"));
     }
 }

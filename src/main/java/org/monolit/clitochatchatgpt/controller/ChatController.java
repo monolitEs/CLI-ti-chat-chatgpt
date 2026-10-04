@@ -38,8 +38,17 @@ public class ChatController {
                     new ChatError(requestId, "MESSAGE_REQUIRED"));
         }
 
+        var idNode = request.conversationId();
+        String conversationId = null;
+        if (idNode != null && !idNode.isNull()) {
+            conversationId = idNode.stringValueOpt().orElse(null);
+            if (conversationId == null || conversationId.isBlank() || conversationId.length() > 256) {
+                return error(HttpStatus.BAD_REQUEST, requestId, "CONVERSATION_ID_INVALID", started);
+            }
+        }
+
         try {
-            var answer = chatService.chat(requestId, request.message());
+            var answer = chatService.chat(requestId, request.message(), conversationId);
             log.info("Chat request completed requestId={} durationMs={}",
                     requestId, elapsedMillis(started));
             return response(HttpStatus.OK, requestId, new ChatResponse(requestId, answer));

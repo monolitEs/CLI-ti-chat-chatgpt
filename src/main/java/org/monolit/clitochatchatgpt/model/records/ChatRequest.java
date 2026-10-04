@@ -1,4 +1,6 @@
 package org.monolit.clitochatchatgpt.model.records;
 
-public record ChatRequest(String message) {
+import tools.jackson.databind.JsonNode;
+
+public record ChatRequest(String message, JsonNode conversationId) {
 }
