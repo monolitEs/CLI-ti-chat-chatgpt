@@ -212,3 +212,8 @@ Secrets and variables → Actions добавьте:
 анализ завершается явной ошибкой без обхода gate. JaCoCo/test reports сохраняются
 в `quality-reports`. После настройки проверьте push/PR run и coverage в Sonar.
 CI не блокирует существующий Deploy; required checks для merge задаются в GitHub.
+
+Кеши Maven/Sonar хранятся в `/tmp` временного job container без host bind.
+После загрузки отчётов workflow удаляет `target`, включая при ошибке проверки.
+Workspace и служебные логи GitHub runner остаются; авария раннера может прервать
+очистку. Прежний `/srv/github-runner/ci/cache/m2` автоматически не удаляется.
