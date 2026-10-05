@@ -29,7 +29,7 @@ class ConversationStoreTests {
     }
 
     @Test
-    void reloadsMultipleMappingsIncludingPathLikeKeysAfterRestart() throws Exception {
+    void reloadsMultipleMappingsIncludingPathLikeKeysAfterRestart() throws IOException {
         var file = directory.resolve("nested/conversations.json");
         var original = store(file);
         assertThat(original.find("vk:a")).isNull();
@@ -59,7 +59,7 @@ class ConversationStoreTests {
             "{\"version\":1,\"conversations\":{\"a\":null}}",
             "{\"version\":1,\"conversations\":{\"a\":\" \"}}",
             "{\"version\":1,\"conversations\":{\" \":\"thr_a\"}}"})
-    void refusesToOverwriteCorruptStore(String content) throws Exception {
+    void refusesToOverwriteCorruptStore(String content) throws IOException {
         var file = directory.resolve("conversations.json");
         Files.writeString(file, content);
         var store = store(file);
@@ -69,7 +69,7 @@ class ConversationStoreTests {
     }
 
     @Test
-    void refusesToRecreateStoreDeletedDuringProcessLifetime() throws Exception {
+    void refusesToRecreateStoreDeletedDuringProcessLifetime() throws IOException {
         var file = directory.resolve("conversations.json");
         var store = store(file);
         store.save("a", "thr_a");
@@ -80,7 +80,7 @@ class ConversationStoreTests {
     }
 
     @Test
-    void unreadableReplacementTargetDoesNotOverwriteBackup() throws Exception {
+    void unreadableReplacementTargetDoesNotOverwriteBackup() throws IOException {
         var file = directory.resolve("conversations.json");
         var store = store(file);
         store.save("a", "thr_a");
@@ -98,7 +98,7 @@ class ConversationStoreTests {
     }
 
     @Test
-    void unsupportedAtomicMovePreservesPreviousMappingsAndCleansTemporaryFile() throws Exception {
+    void unsupportedAtomicMovePreservesPreviousMappingsAndCleansTemporaryFile() throws IOException {
         var file = directory.resolve("conversations.json");
         var store = store(file);
         store.save("a", "thr_a");

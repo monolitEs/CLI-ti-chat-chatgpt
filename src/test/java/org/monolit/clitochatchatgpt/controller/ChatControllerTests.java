@@ -1,5 +1,6 @@
 package org.monolit.clitochatchatgpt.controller;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -84,23 +85,23 @@ class ChatControllerTests {
     }
 
     @Test
-    void forwardsConversationIdWithoutChangingResponse() throws Exception {
+    void forwardsConversationIdWithoutChangingResponse() {
         when(chatService.chat(anyString(), eq("Hello"), eq("vk:peer:session"))).thenReturn("Remembered");
-        mvc.perform(post("/api/chat").contentType(MediaType.APPLICATION_JSON)
+        assertDoesNotThrow(() -> mvc.perform(post("/api/chat").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"message\":\"Hello\",\"conversationId\":\"vk:peer:session\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.answer").value("Remembered"))
-                .andExpect(jsonPath("$.conversationId").doesNotExist());
+                .andExpect(jsonPath("$.conversationId").doesNotExist()));
     }
 
     @ParameterizedTest
     @MethodSource("invalidIds")
-    void rejectsInvalidConversationIdWithoutCallingService(String id) throws Exception {
-        mvc.perform(post("/api/chat").contentType(MediaType.APPLICATION_JSON)
+    void rejectsInvalidConversationIdWithoutCallingService(String id) {
+        assertDoesNotThrow(() -> mvc.perform(post("/api/chat").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"message\":\"Hello\",\"conversationId\":" + id + "}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(header().exists(ChatController.REQUEST_ID_HEADER))
-                .andExpect(jsonPath("$.code").value("CONVERSATION_ID_INVALID"));
+                .andExpect(jsonPath("$.code").value("CONVERSATION_ID_INVALID")));
         verifyNoInteractions(chatService);
     }
 
@@ -109,10 +110,10 @@ class ChatControllerTests {
     }
 
     @Test
-    void acceptsNullConversationIdAsOneShot() throws Exception {
+    void acceptsNullConversationIdAsOneShot() {
         when(chatService.chat(anyString(), eq("Hello"), isNull())).thenReturn("Hi");
-        mvc.perform(post("/api/chat").contentType(MediaType.APPLICATION_JSON)
+        assertDoesNotThrow(() -> mvc.perform(post("/api/chat").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"message\":\"Hello\",\"conversationId\":null}"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.answer").value("Hi"));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.answer").value("Hi")));
     }
 }

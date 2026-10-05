@@ -32,7 +32,7 @@ class CodexAppServerClientTests {
     Path directory;
 
     @Test
-    void persistsSeparateThreadsAndResumesSameConversation() throws Exception {
+    void persistsSeparateThreadsAndResumesSameConversation() throws IOException {
         var stdout = protocolPrefix() + completed("thr_1", "first")
                 + threadTurn(5, "thr_1") + completed("thr_1", "continued")
                 + threadTurn(7, "thr_2") + completed("thr_2", "separate");
@@ -56,7 +56,7 @@ class CodexAppServerClientTests {
     }
 
     @Test
-    void resumesPersistedThreadAfterClientAndAppServerRestart() throws Exception {
+    void resumesPersistedThreadAfterClientAndAppServerRestart() throws IOException {
         var mapper = JsonMapper.builder().build();
         var file = directory.resolve("conversations.json");
         var firstProcess = new FakeProcess(protocolPrefix() + completed("thr_1", "saved"));
@@ -71,7 +71,7 @@ class CodexAppServerClientTests {
     }
 
     @Test
-    void resumesAfterResetWithoutLosingMapping() throws Exception {
+    void resumesAfterResetWithoutLosingMapping() throws IOException {
         var mapper = JsonMapper.builder().build();
         var processes = new ArrayDeque<>(List.of(
                 new FakeProcess(protocolPrefix() + completed("thr_1", "saved")),
@@ -87,7 +87,7 @@ class CodexAppServerClientTests {
     }
 
     @Test
-    void failedResumeDoesNotStartNewThreadOrSendTurn() throws Exception {
+    void failedResumeDoesNotStartNewThreadOrSendTurn() throws IOException {
         var mapper = JsonMapper.builder().build();
         var store = new ConversationStore(mapper, directory.resolve("conversations.json"));
         store.save("a", "thr_missing");
@@ -102,7 +102,7 @@ class CodexAppServerClientTests {
     }
 
     @Test
-    void mismatchedResumeIdDoesNotSendTurn() throws Exception {
+    void mismatchedResumeIdDoesNotSendTurn() throws IOException {
         var mapper = JsonMapper.builder().build();
         var store = new ConversationStore(mapper, directory.resolve("conversations.json"));
         store.save("a", "thr_expected");
@@ -115,7 +115,7 @@ class CodexAppServerClientTests {
     }
 
     @Test
-    void storageWriteFailurePreventsTurnFromStarting() throws Exception {
+    void storageWriteFailurePreventsTurnFromStarting() throws IOException {
         var mapper = JsonMapper.builder().build();
         var process = new FakeProcess(protocolPrefix());
         var store = mock(ConversationStore.class);
@@ -129,7 +129,7 @@ class CodexAppServerClientTests {
     }
 
     @Test
-    void savesMappingBeforeTurnStart() throws Exception {
+    void savesMappingBeforeTurnStart() throws IOException {
         var mapper = JsonMapper.builder().build();
         var process = new FakeProcess(protocolPrefix() + completed("thr_1", "answer"));
         var store = mock(ConversationStore.class);
@@ -148,15 +148,17 @@ class CodexAppServerClientTests {
     }
 
     private static String threadTurn(int id, String thread) {
-        return "{\"id\":" + id + ",\"result\":{\"thread\":{\"id\":\"" + thread + "\"}}}\n"
-                + "{\"id\":" + (id + 1) + ",\"result\":{\"turn\":{\"id\":\"turn\"}}}\n";
+        return """
+                {"id":%d,"result":{"thread":{"id":"%s"}}}
+                {"id":%d,"result":{"turn":{"id":"turn"}}}
+                """.formatted(id, thread, id + 1);
     }
 
     private static String completed(String thread, String answer) {
-        return "{\"method\":\"item/completed\",\"params\":{\"threadId\":\"" + thread
-                + "\",\"item\":{\"type\":\"agentMessage\",\"text\":\"" + answer + "\"}}}\n"
-                + "{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"" + thread
-                + "\",\"turn\":{\"status\":\"completed\"}}}\n";
+        return """
+                {"method":"item/completed","params":{"threadId":"%s","item":{"type":"agentMessage","text":"%s"}}}
+                {"method":"turn/completed","params":{"threadId":"%s","turn":{"status":"completed"}}}
+                """.formatted(thread, answer, thread);
     }
 
     @Test

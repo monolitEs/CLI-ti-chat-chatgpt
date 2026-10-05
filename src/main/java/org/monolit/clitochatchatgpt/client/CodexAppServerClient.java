@@ -104,21 +104,20 @@ public class CodexAppServerClient {
                 throw new CodexException(CodexFailure.PROTOCOL, "Resumed thread ID does not match");
             }
             return resumedId;
-        } else {
-            send(Map.of(
-                    "method", "thread/start",
-                    "id", threadRequestId,
-                    "params", Map.of(
-                            "serviceName", "cli_to_chat_chatgpt",
-                            "ephemeral", conversationId == null)));
-            var threadResponse = readResponse(threadRequestId);
-            var threadId = requiredText(threadResponse, "/result/thread/id");
-
-            if (conversationId != null) {
-                conversations.save(conversationId, threadId);
-            }
-            return threadId;
         }
+        send(Map.of(
+                "method", "thread/start",
+                "id", threadRequestId,
+                "params", Map.of(
+                        "serviceName", "cli_to_chat_chatgpt",
+                        "ephemeral", conversationId == null)));
+        var threadResponse = readResponse(threadRequestId);
+        var threadId = requiredText(threadResponse, "/result/thread/id");
+
+        if (conversationId != null) {
+            conversations.save(conversationId, threadId);
+        }
+        return threadId;
     }
 
     public void interruptActiveTurn() {
