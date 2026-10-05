@@ -188,3 +188,27 @@ docker compose logs --tail 100 codex
 логирует. Если авторизация или запрос не работают, проверьте ChatGPT login,
 имя внешней сети и доступность `gost:8080`. SOCKS5 и логи GOST проверяйте
 в отдельном проекте proxy. Успешный HTTP smoke CD не доказывает работу proxy.
+
+## Проверки Java CI и SonarQube Cloud
+
+На PR в `main` и push в `main` выполняются Maven build/tests, затем анализ
+SonarQube Cloud (`https://sonarcloud.io`) с ожиданием Quality Gate до 300 секунд.
+Ошибка сборки, анализа или Quality Gate завершает CI ошибкой. JaCoCo XML
+передаётся Sonar; условия качества и coverage задаются в Quality Gate проекта.
+Отдельных Synapse, diff-cover, CVE и license проверок в workflow больше нет.
+
+Импортируйте репозиторий в SonarQube Cloud и выберите CI-based analysis;
+отключите Automatic Analysis, если он включён. В GitHub → Settings →
+Secrets and variables → Actions добавьте:
+
+| Тип | Имя | Значение |
+| --- | --- | --- |
+| Secret | `SONAR_TOKEN` | Токен Sonar с правом анализа проекта |
+| Variable | `SONAR_ORGANIZATION` | Organization key из Sonar |
+| Variable | `SONAR_PROJECT_KEY` | Project key из Sonar |
+
+Раннеру нужен HTTPS-доступ к SonarQube Cloud и Maven Central. План Sonar должен
+поддерживать нужный PR-анализ. Для fork PR GitHub не передаёт token: тесты идут,
+анализ завершается явной ошибкой без обхода gate. JaCoCo/test reports сохраняются
+в `quality-reports`. После настройки проверьте push/PR run и coverage в Sonar.
+CI не блокирует существующий Deploy; required checks для merge задаются в GitHub.
