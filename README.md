@@ -195,6 +195,10 @@ docker compose logs --tail 100 codex
 SonarQube Cloud (`https://sonarcloud.io`) с ожиданием Quality Gate до 300 секунд.
 Ошибка сборки, анализа или Quality Gate завершает CI ошибкой. JaCoCo XML
 передаётся Sonar; условия качества и coverage задаются в Quality Gate проекта.
+Падения тестов не блокируют CI: Maven продолжает `verify`, формирует JaCoCo XML
+и запускается Sonar. Ошибки компиляции/сборки остаются блокирующими. Результаты
+тестов доступны в `quality-reports`; выполненные строки учитываются в coverage
+даже у упавшего теста, поэтому Quality Gate может пройти при падении тестов.
 Отдельных Synapse, diff-cover, CVE и license проверок в workflow больше нет.
 
 Импортируйте репозиторий в SonarQube Cloud и выберите CI-based analysis;
