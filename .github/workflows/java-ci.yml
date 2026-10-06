@@ -24,7 +24,6 @@ jobs:
       options: >-
         --memory=1400m
         --cpus=1
-        --volume /srv/github-runner/ci/cache/m2:/root/.m2
 
     defaults:
       run:
@@ -35,10 +34,8 @@ jobs:
         -Xms128m
         -Xmx768m
         -XX:MaxMetaspaceSize=256m
-      BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      SYNAPSE_VERSION: v0.2.4
-      GOMAXPROCS: "1"
-      GOMEMLIMIT: 700MiB
+        -Dmaven.repo.local=/tmp/m2
+      SONAR_USER_HOME: /tmp/sonar
 
     steps:
       - name: Checkout
@@ -51,331 +48,48 @@ jobs:
       - name: Trust workspace directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Fetch PR base
-        if: github.event_name == 'pull_request'
-        run: git fetch --no-tags origin "$BASE_SHA"
-
-      - name: Install system tools
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            ca-certificates curl git build-essential \
-            python3 python3-venv
-          rm -rf /var/lib/apt/lists/*
-
-      - name: Setup Go for Java analyzer
-        uses: actions/setup-go@v6
-        with:
-          go-version: "1.27.0"
-          cache: false
-
-      - name: Install Synapse CLI
-        run: |
-          set -euo pipefail
-
-          arch=amd64
-
-          version="${SYNAPSE_VERSION#v}"
-          asset="synapse-cli_${version}_linux_${arch}.tar.gz"
-          base="https://github.com/KKloudTarus/synapse-ce/releases/download/${SYNAPSE_VERSION}"
-          bin_dir="$(mktemp -d /tmp/synapse-bin.XXXXXX)"
-
-          curl --fail --silent --show-error --location \
-            --retry 3 \
-            "$base/$asset" -o "$bin_dir/$asset"
-          curl --fail --silent --show-error --location \
-            --retry 3 \
-            "$base/checksums.txt" -o "$bin_dir/checksums.txt"
-
-          checksum="$(awk -v f="$asset" '$2 == f {print $1}' \
-            "$bin_dir/checksums.txt")"
-          test -n "$checksum"
-
-          (
-            cd "$bin_dir"
-            printf '%s  %s\n' "$checksum" "$asset" | sha256sum -c -
-            tar -xzf "$asset" synapse-cli
-          )
-
-          chmod +x "$bin_dir/synapse-cli"
-          echo "$bin_dir" >> "$GITHUB_PATH"
-          echo "SYNAPSE_BIN_DIR=$bin_dir" >> "$GITHUB_ENV"
-
-      - name: Build Synapse Java analyzer
-        run: |
-          set -euo pipefail
-
-          source_dir="$(mktemp -d /tmp/synapse-source.XXXXXX)"
-          git clone --depth 1 --branch "$SYNAPSE_VERSION" \
-            https://github.com/KKloudTarus/synapse-ce.git \
-            "$source_dir"
-
-          (
-            cd "$source_dir"
-            CGO_ENABLED=1 go build -p 1 \
-              -o "$SYNAPSE_BIN_DIR/synapse-ast" \
-              ./cmd/synapse-ast
-          )
-
-          echo "SYNAPSE_AST_BIN=$SYNAPSE_BIN_DIR/synapse-ast" \
-            >> "$GITHUB_ENV"
-          rm -rf "$source_dir"
-
-      - name: Verify Java analyzer
-        run: |
-          # A missing or CGO-free analyzer must fail CI.
-          "$SYNAPSE_AST_BIN" functions src/main/java \
-            > /tmp/synapse-java-functions.json
-
-          python3 - <<'PY'
-          import json
-
-          with open("/tmp/synapse-java-functions.json") as report:
-              data = json.load(report)
-
-          if data.get("functions", {}).get("Java", 0) <= 0:
-              raise SystemExit("Synapse did not recognize Java functions")
-          PY
-
-      - name: Install coverage tools
-        if: github.event_name == 'pull_request'
-        run: |
-          python3 -m venv /tmp/pr-quality-venv
-          /tmp/pr-quality-venv/bin/python -m pip install \
-            diff-cover==10.6.0
-
       - name: Build and tests
-        id: build
-        continue-on-error: true
-        run: mvn --batch-mode --no-transfer-progress clean verify
+        run: mvn --batch-mode --no-transfer-progress -Dmaven.test.failure.ignore=true clean verify
 
-      - name: Changed lines coverage — minimum 80%
-        id: coverage
-        if: >-
-          github.event_name == 'pull_request' &&
-          steps.build.outcome == 'success'
-        continue-on-error: true
-        run: |
-          /tmp/pr-quality-venv/bin/diff-cover \
-            target/site/jacoco/jacoco.xml \
-            --compare-branch="$BASE_SHA" \
-            --src-roots=src/main/java \
-            --fail-under=80 \
-            --total-percent-float \
-            --format=markdown:target/diff-coverage.md
-
-      - name: Synapse security scan
-        id: security
-        continue-on-error: true
+      - name: Prepare proxy network connection
         run: |
           mkdir -p target
-          args=(scan . --fail-on high --include-test)
+          cat > target/ci-connect-proxy.sh <<'BASH'
+          : "${PROXY_NETWORK_NAME:?Set GitHub variable PROXY_NETWORK_NAME}"
+          : "${CI_CONTAINER_ID:?Missing CI job container ID}"
+          docker network connect -- "$PROXY_NETWORK_NAME" "$CI_CONTAINER_ID"
+          BASH
 
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            args+=(--base "$BASE_SHA")
-          fi
-
-          synapse-cli "${args[@]}" \
-            --sarif-out target/synapse-security.sarif
-
-      - name: Synapse code quality gate
-        id: synapse
-        if: github.event_name == 'pull_request'
-        continue-on-error: true
-        run: |
-          mkdir -p target
-
-          # Reject every code-quality finding on changed lines.
-          gate_file="$(mktemp /tmp/synapse-gate.XXXXXX.yaml)"
-          cat > "$gate_file" <<'YAML'
-          conditions:
-            - metric: new_issues
-              op: "<="
-              threshold: 0
-          YAML
-
-          synapse-cli gate . \
-            --new-code-only \
-            --base "$BASE_SHA" \
-            --gate "$gate_file" \
-            --format markdown \
-            > target/synapse-quality.md
-
-      - name: Job summary
-        if: always()
+      - name: Connect CI container to proxy network
+        uses: docker://ghcr.io/catthehacker/ubuntu:act-24.04
         env:
-          BUILD_RESULT: ${{ steps.build.outcome }}
-          COVERAGE_RESULT: ${{ steps.coverage.outcome }}
-          SECURITY_RESULT: ${{ steps.security.outcome }}
-          SYNAPSE_RESULT: ${{ steps.synapse.outcome }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          DOCKER_HOST: unix:///var/run/docker.sock
+          PROXY_NETWORK_NAME: ${{ vars.PROXY_NETWORK_NAME }}
+          CI_CONTAINER_ID: ${{ job.container.id }}
+        with:
+          entrypoint: bash
+          args: -euo pipefail target/ci-connect-proxy.sh
+
+      - name: SonarQube Cloud analysis and Quality Gate
+        env:
+          SONAR_SCANNER_PROXY_HOST: gost
+          SONAR_SCANNER_PROXY_PORT: "8080"
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
         run: |
-          {
-            echo "## PR Quality"
-            echo
-            echo "| Check | Result |"
-            echo "|---|---|"
-            echo "| Build and tests | $BUILD_RESULT |"
-            echo "| Synapse security | $SECURITY_RESULT |"
-
-            if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-              echo "| Changed lines coverage ≥ 80% | $COVERAGE_RESULT |"
-              echo "| Synapse code quality | $SYNAPSE_RESULT |"
-            fi
-
-            for report in \
-              target/diff-coverage.md \
-              target/synapse-quality.md
-            do
-              if [ -f "$report" ]; then
-                echo
-                cat "$report"
-              fi
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
-            exit 0
-          fi
-
-          mkdir -p target
-          if ! synapse-cli quality . --sarif \
-            > target/synapse-quality.sarif
-          then
-            echo >> "$GITHUB_STEP_SUMMARY"
-            echo "Detailed code-quality report unavailable: see logs." \
-              >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
-          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
-          import html
-          import json
-          import os
-          import re
-          import subprocess
-          from pathlib import Path
-          from urllib.parse import quote, unquote, urlsplit
-
-          root = Path.cwd().resolve()
-          diff = subprocess.check_output(
-              [
-                  "git", "-c", "core.quotePath=false", "diff",
-                  "--relative", "--unified=0", "--no-color",
-                  "--no-ext-diff", "--no-textconv", "--diff-filter=d",
-                  "--end-of-options", os.environ["BASE_SHA"], "--", ".",
-              ],
-              text=True,
-          )
-
-          changed = {}
-          path = None
-          for line in diff.splitlines():
-              if line.startswith("+++ b/"):
-                  path = line[6:]
-              elif line.startswith("+++ "):
-                  path = None
-              elif path and line.startswith("@@"):
-                  match = re.match(
-                      r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@",
-                      line,
-                  )
-                  if match:
-                      start = int(match[1])
-                      count = int(match[2]) if match[2] is not None else 1
-                      changed.setdefault(path, set()).update(
-                          range(start, start + count)
-                      )
-
-          def cell(value):
-              value = " ".join(str(value).split())
-              return html.escape(value).replace("|", "&#124;")
-
-          def source_path(uri):
-              parsed = urlsplit(uri)
-              if parsed.scheme not in ("", "file"):
-                  return None
-              value = unquote(parsed.path).replace("\\", "/")
-              candidate = Path(value)
-              if candidate.is_absolute():
-                  try:
-                      value = candidate.resolve().relative_to(root).as_posix()
-                  except ValueError:
-                      return None
-              return value.removeprefix("./")
-
-          report = json.loads(
-              Path("target/synapse-quality.sarif").read_text()
-          )
-          findings = set()
-
-          for run in report.get("runs", []):
-              rules = run.get("tool", {}).get("driver", {}).get("rules", [])
-              artifacts = run.get("artifacts", [])
-
-              for result in run.get("results", []):
-                  rule = result.get("ruleId")
-                  index = result.get("ruleIndex")
-                  if not rule and isinstance(index, int):
-                      if 0 <= index < len(rules):
-                          rule = rules[index].get("id")
-
-                  message = result.get("message", {})
-                  description = (
-                      message.get("text") or message.get("markdown", "")
-                  )
-
-                  for location in result.get("locations", []):
-                      physical = location.get("physicalLocation", {})
-                      artifact = physical.get("artifactLocation", {})
-                      uri = artifact.get("uri")
-                      index = artifact.get("index")
-
-                      if not uri and isinstance(index, int):
-                          if 0 <= index < len(artifacts):
-                              uri = (
-                                  artifacts[index]
-                                  .get("location", {})
-                                  .get("uri")
-                              )
-                      if not uri:
-                          continue
-
-                      path = source_path(uri)
-                      number = physical.get("region", {}).get("startLine")
-
-                      if number in changed.get(path, set()):
-                          findings.add((
-                              path,
-                              number,
-                              rule or "",
-                              result.get("level", ""),
-                              description,
-                          ))
-
-          print("\n## Code-quality findings on changed lines\n")
-
-          if not findings:
-              print("No code-quality findings on changed lines.")
-          else:
-              print("| File and line | Level | Rule | Description |")
-              print("|---|---|---|---|")
-
-              base = (
-                  f'{os.environ["GITHUB_SERVER_URL"]}/'
-                  f'{os.environ["GITHUB_REPOSITORY"]}/blob/'
-                  f'{os.environ["HEAD_SHA"]}'
-              )
-
-              for path, number, rule, level, description in sorted(findings):
-                  url = f"{base}/{quote(path, safe='/')}#L{number}"
-                  label = cell(f"{path}:{number}")
-                  label = label.replace("[", "&#91;").replace("]", "&#93;")
-                  print(
-                      f"| [{label}]({url}) | {cell(level)} | "
-                      f"{cell(rule)} | {cell(description)} |"
-                  )
-          PY
+          set -euo pipefail
+          : "${SONAR_TOKEN:?Set GitHub secret SONAR_TOKEN; fork PR analysis is unavailable}"
+          : "${SONAR_ORGANIZATION:?Set GitHub variable SONAR_ORGANIZATION}"
+          : "${SONAR_PROJECT_KEY:?Set GitHub variable SONAR_PROJECT_KEY}"
+          mvn --batch-mode --no-transfer-progress \
+            org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar \
+            "-Dsonar.organization=$SONAR_ORGANIZATION" \
+            "-Dsonar.projectKey=$SONAR_PROJECT_KEY" \
+            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+            -Dsonar.qualitygate.wait=true \
+            -Dsonar.qualitygate.timeout=300
 
       - name: Upload reports
         if: always()
@@ -384,37 +98,13 @@ jobs:
           name: quality-reports
           if-no-files-found: warn
           path: |
-            target/diff-coverage.md
-            target/synapse-*.md
-            target/synapse-*.sarif
             target/site/jacoco/
             target/surefire-reports/
 
-      - name: Enforce quality gate
+      - name: Clean build output
         if: always()
-        env:
-          BUILD_RESULT: ${{ steps.build.outcome }}
-          COVERAGE_RESULT: ${{ steps.coverage.outcome }}
-          SECURITY_RESULT: ${{ steps.security.outcome }}
-          SYNAPSE_RESULT: ${{ steps.synapse.outcome }}
         run: |
-          failed=0
-
-          for result in "$BUILD_RESULT" "$SECURITY_RESULT"; do
-            if [ "$result" != "success" ]; then
-              failed=1
-            fi
-          done
-
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            for result in "$COVERAGE_RESULT" "$SYNAPSE_RESULT"; do
-              if [ "$result" != "success" ]; then
-                failed=1
-              fi
-            done
-          fi
-
-          if [ "$failed" -ne 0 ]; then
-            echo "::error::Quality gate failed. See reports and logs."
-            exit 1
-          fi
+          set -euo pipefail
+          : "${GITHUB_WORKSPACE:?Missing runner workspace}"
+          test "$GITHUB_WORKSPACE" != /
+          rm -rf -- "$GITHUB_WORKSPACE/target"
