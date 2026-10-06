@@ -1,30 +1,22 @@
 package org.monolit.clitochatchatgpt.client;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.doThrow;
-
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.PipedInputStream;
-import java.io.PipedOutputStream;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
-import java.io.IOException;
-import java.util.ArrayDeque;
-import java.util.List;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.monolit.clitochatchatgpt.model.enums.CodexFailure;
 import org.monolit.clitochatchatgpt.model.exceptions.CodexException;
 import tools.jackson.databind.json.JsonMapper;
+
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.ArrayDeque;
+import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.*;
 
 class CodexAppServerClientTests {
 
@@ -56,7 +48,7 @@ class CodexAppServerClientTests {
     }
 
     @Test
-    void resumesPersistedThreadAfterClientAndAppServerRestart() throws IOException {
+    void resumesPersistedThreadAfterClientAndAppServerRestart() {
         var mapper = JsonMapper.builder().build();
         var file = directory.resolve("conversations.json");
         var firstProcess = new FakeProcess(protocolPrefix() + completed("thr_1", "saved"));
@@ -71,7 +63,7 @@ class CodexAppServerClientTests {
     }
 
     @Test
-    void resumesAfterResetWithoutLosingMapping() throws IOException {
+    void resumesAfterResetWithoutLosingMapping() {
         var mapper = JsonMapper.builder().build();
         var processes = new ArrayDeque<>(List.of(
                 new FakeProcess(protocolPrefix() + completed("thr_1", "saved")),

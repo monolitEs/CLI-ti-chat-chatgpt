@@ -1,15 +1,5 @@
 package org.monolit.clitochatchatgpt.client;
 
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
-import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicLong;
-
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.monolit.clitochatchatgpt.model.enums.CodexFailure;
@@ -21,6 +11,12 @@ import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
+
 @Component
 @Slf4j
 public class CodexAppServerClient {
@@ -29,6 +25,8 @@ public class CodexAppServerClient {
     private final ProcessStarter processStarter;
     private final ConversationStore conversations;
     private final AtomicLong requestIds = new AtomicLong();
+
+    private static final String METHOD = "method";
 
     private volatile Process process;
     private volatile BufferedReader stdout;
@@ -64,7 +62,7 @@ public class CodexAppServerClient {
 
             var turnRequestId = nextId();
             send(Map.of(
-                    "method", "turn/start",
+                    METHOD, "turn/start",
                     "id", turnRequestId,
                     "params", Map.of(
                             "threadId", threadId,
@@ -97,7 +95,7 @@ public class CodexAppServerClient {
         var storedId = conversationId == null ? null : conversations.find(conversationId);
         var threadRequestId = nextId();
         if (storedId != null) {
-            send(Map.of("method", "thread/resume", "id", threadRequestId,
+            send(Map.of(METHOD, "thread/resume", "id", threadRequestId,
                     "params", Map.of("threadId", storedId)));
             var resumedId = requiredText(readResponse(threadRequestId), "/result/thread/id");
             if (!storedId.equals(resumedId)) {
@@ -106,7 +104,7 @@ public class CodexAppServerClient {
             return resumedId;
         }
         send(Map.of(
-                "method", "thread/start",
+                METHOD, "thread/start",
                 "id", threadRequestId,
                 "params", Map.of(
                         "serviceName", "cli_to_chat_chatgpt",
@@ -128,7 +126,7 @@ public class CodexAppServerClient {
         }
         try {
             send(Map.of(
-                    "method", "turn/interrupt",
+                    METHOD, "turn/interrupt",
                     "id", nextId(),
                     "params", Map.of("threadId", turn.threadId(), "turnId", turn.turnId())));
         } catch (IOException | RuntimeException exception) {
@@ -148,18 +146,18 @@ public class CodexAppServerClient {
 
             var initializeId = nextId();
             send(Map.of(
-                    "method", "initialize",
+                    METHOD, "initialize",
                     "id", initializeId,
                     "params", Map.of("clientInfo", Map.of(
                             "name", "cli_to_chat_chatgpt",
                             "title", "CLI to Chat ChatGPT",
                             "version", "0.0.1"))));
             readResponse(initializeId);
-            send(Map.of("method", "initialized", "params", Map.of()));
+            send(Map.of(METHOD, "initialized", "params", Map.of()));
 
             var accountId = nextId();
             send(Map.of(
-                    "method", "account/read",
+                    METHOD, "account/read",
                     "id", accountId,
                     "params", Map.of("refreshToken", false)));
             var account = readResponse(accountId).path("result");
@@ -182,7 +180,7 @@ public class CodexAppServerClient {
         String answer = null;
         while (true) {
             var message = readMessage();
-            var method = text(message.path("method"));
+            var method = text(message.path(METHOD));
             var params = message.path("params");
             if (!threadId.equals(text(params.path("threadId")))) {
                 continue;
