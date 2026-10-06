@@ -1,24 +1,157 @@
 package org.monolit.clitochatchatgpt.client;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.PipedInputStream;
-import java.io.PipedOutputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.monolit.clitochatchatgpt.model.enums.CodexFailure;
 import org.monolit.clitochatchatgpt.model.exceptions.CodexException;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.ArrayDeque;
+import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.*;
+
 class CodexAppServerClientTests {
+
+    @TempDir
+    Path directory;
+
+    @Test
+    void persistsSeparateThreadsAndResumesSameConversation() throws IOException {
+        var stdout = protocolPrefix() + completed("thr_1", "first")
+                + threadTurn(5, "thr_1") + completed("thr_1", "continued")
+                + threadTurn(7, "thr_2") + completed("thr_2", "separate");
+        var process = new FakeProcess(stdout);
+        var mapper = JsonMapper.builder().build();
+        var store = new ConversationStore(mapper, directory.resolve("conversations.json"));
+        var client = new CodexAppServerClient(mapper, () -> process, store);
+
+        assertThat(client.chat("req-1", "first", "a")).isEqualTo("first");
+        assertThat(store.find("a")).isEqualTo("thr_1");
+        assertThat(client.chat("req-2", "continue", "a")).isEqualTo("continued");
+        assertThat(client.chat("req-3", "separate", "b")).isEqualTo("separate");
+        assertThat(store.find("b")).isEqualTo("thr_2");
+        var requests = process.requests().lines().map(mapper::readTree).toList();
+        var methods = requests.stream().map(n -> n.path("method").asString()).toList();
+        assertThat(methods).containsExactly("initialize", "initialized", "account/read",
+                "thread/start", "turn/start", "thread/resume", "turn/start", "thread/start", "turn/start");
+        assertThat(requests.get(3).at("/params/ephemeral").asBoolean()).isFalse();
+        assertThat(requests.get(5).at("/params/threadId").asString()).isEqualTo("thr_1");
+        assertThat(requests.get(8).at("/params/threadId").asString()).isEqualTo("thr_2");
+    }
+
+    @Test
+    void resumesPersistedThreadAfterClientAndAppServerRestart() {
+        var mapper = JsonMapper.builder().build();
+        var file = directory.resolve("conversations.json");
+        var firstProcess = new FakeProcess(protocolPrefix() + completed("thr_1", "saved"));
+        var first = new CodexAppServerClient(mapper, () -> firstProcess, new ConversationStore(mapper, file));
+        first.chat("req-1", "save", "a");
+        first.reset();
+        var nextProcess = new FakeProcess(protocolPrefix() + completed("thr_1", "remembered"));
+        var next = new CodexAppServerClient(mapper, () -> nextProcess, new ConversationStore(mapper, file));
+        assertThat(next.chat("req-2", "continue", "a")).isEqualTo("remembered");
+        assertThat(nextProcess.requests()).contains("\"method\":\"thread/resume\"")
+                .doesNotContain("\"method\":\"thread/start\"");
+    }
+
+    @Test
+    void resumesAfterResetWithoutLosingMapping() {
+        var mapper = JsonMapper.builder().build();
+        var processes = new ArrayDeque<>(List.of(
+                new FakeProcess(protocolPrefix() + completed("thr_1", "saved")),
+                new FakeProcess(handshake(5) + threadTurn(7, "thr_1") + completed("thr_1", "remembered"))));
+        var secondProcess = processes.getLast();
+        var client = new CodexAppServerClient(mapper, processes::remove,
+                new ConversationStore(mapper, directory.resolve("conversations.json")));
+        client.chat("req-1", "save", "a");
+        client.reset();
+        assertThat(client.chat("req-2", "continue", "a")).isEqualTo("remembered");
+        assertThat(secondProcess.requests()).contains("\"method\":\"thread/resume\"")
+                .doesNotContain("\"method\":\"thread/start\"");
+    }
+
+    @Test
+    void failedResumeDoesNotStartNewThreadOrSendTurn() throws IOException {
+        var mapper = JsonMapper.builder().build();
+        var store = new ConversationStore(mapper, directory.resolve("conversations.json"));
+        store.save("a", "thr_missing");
+        var process = new FakeProcess(handshake(1) + "{\"id\":3,\"error\":{\"code\":-32600,\"message\":\"missing\"}}\n");
+        var client = new CodexAppServerClient(mapper, () -> process, store);
+        assertThatThrownBy(() -> client.chat("req-1", "continue", "a"))
+                .isInstanceOfSatisfying(CodexException.class,
+                        e -> assertThat(e.kind()).isEqualTo(CodexFailure.UNAVAILABLE));
+        assertThat(process.requests()).contains("\"method\":\"thread/resume\"")
+                .doesNotContain("\"method\":\"thread/start\"", "\"method\":\"turn/start\"");
+        assertThat(store.find("a")).isEqualTo("thr_missing");
+    }
+
+    @Test
+    void mismatchedResumeIdDoesNotSendTurn() throws IOException {
+        var mapper = JsonMapper.builder().build();
+        var store = new ConversationStore(mapper, directory.resolve("conversations.json"));
+        store.save("a", "thr_expected");
+        var process = new FakeProcess(protocolPrefix());
+        var client = new CodexAppServerClient(mapper, () -> process, store);
+        assertThatThrownBy(() -> client.chat("req-1", "continue", "a"))
+                .isInstanceOfSatisfying(CodexException.class,
+                        e -> assertThat(e.kind()).isEqualTo(CodexFailure.PROTOCOL));
+        assertThat(process.requests()).doesNotContain("\"method\":\"turn/start\"");
+    }
+
+    @Test
+    void storageWriteFailurePreventsTurnFromStarting() throws IOException {
+        var mapper = JsonMapper.builder().build();
+        var process = new FakeProcess(protocolPrefix());
+        var store = mock(ConversationStore.class);
+        doThrow(new IOException("Disk full")).when(store).save("a", "thr_1");
+        var client = new CodexAppServerClient(mapper, () -> process, store);
+        assertThatThrownBy(() -> client.chat("req-1", "save", "a"))
+                .isInstanceOfSatisfying(CodexException.class,
+                        e -> assertThat(e.kind()).isEqualTo(CodexFailure.UNAVAILABLE));
+        assertThat(process.requests()).contains("\"method\":\"thread/start\"")
+                .doesNotContain("\"method\":\"turn/start\"");
+    }
+
+    @Test
+    void savesMappingBeforeTurnStart() throws IOException {
+        var mapper = JsonMapper.builder().build();
+        var process = new FakeProcess(protocolPrefix() + completed("thr_1", "answer"));
+        var store = mock(ConversationStore.class);
+        doAnswer(invocation -> {
+            assertThat(process.requests()).contains("\"method\":\"thread/start\"")
+                    .doesNotContain("\"method\":\"turn/start\"");
+            return null;
+        }).when(store).save("a", "thr_1");
+        var client = new CodexAppServerClient(mapper, () -> process, store);
+        assertThat(client.chat("req-1", "Hello", "a")).isEqualTo("answer");
+    }
+
+    private static String handshake(int id) {
+        return "{\"id\":" + id + ",\"result\":{}}\n"
+                + "{\"id\":" + (id + 1) + ",\"result\":{\"account\":{\"type\":\"chatgpt\"}}}\n";
+    }
+
+    private static String threadTurn(int id, String thread) {
+        return """
+                {"id":%d,"result":{"thread":{"id":"%s"}}}
+                {"id":%d,"result":{"turn":{"id":"turn"}}}
+                """.formatted(id, thread, id + 1);
+    }
+
+    private static String completed(String thread, String answer) {
+        return """
+                {"method":"item/completed","params":{"threadId":"%s","item":{"type":"agentMessage","text":"%s"}}}
+                {"method":"turn/completed","params":{"threadId":"%s","turn":{"status":"completed"}}}
+                """.formatted(thread, answer, thread);
+    }
 
     @Test
     void performsHandshakeAndReturnsCompletedAgentMessage() {

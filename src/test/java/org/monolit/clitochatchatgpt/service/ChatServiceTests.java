@@ -33,7 +33,7 @@ class ChatServiceTests {
         var codex = mock(CodexAppServerClient.class);
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
-        when(codex.chat("req-1", "first")).thenAnswer(invocation -> {
+        when(codex.chat("req-1", "first", "dialog-a")).thenAnswer(invocation -> {
             entered.countDown();
             release.await();
             return "done";
@@ -42,10 +42,10 @@ class ChatServiceTests {
 
         var caller = Executors.newVirtualThreadPerTaskExecutor();
         try {
-            var first = caller.submit(() -> service.chat("req-1", "first"));
+            var first = caller.submit(() -> service.chat("req-1", "first", "dialog-a"));
             assertThat(entered.await(1, TimeUnit.SECONDS)).isTrue();
 
-            assertThatThrownBy(() -> service.chat("req-2", "second"))
+            assertThatThrownBy(() -> service.chat("req-2", "second", "dialog-b"))
                     .isInstanceOfSatisfying(ChatException.class,
                             exception -> assertThat(exception.failure())
                                     .isEqualTo(ChatFailure.BUSY));
@@ -61,7 +61,7 @@ class ChatServiceTests {
     void interruptsAndResetsCodexAfterTimeoutWithoutTerminalEvent() throws Exception {
         var codex = mock(CodexAppServerClient.class);
         var blocked = new CountDownLatch(1);
-        when(codex.chat("req-1", "slow")).thenAnswer(invocation -> {
+        when(codex.chat("req-1", "slow", null)).thenAnswer(invocation -> {
             blocked.await();
             return "late";
         });

@@ -43,12 +43,16 @@ public class ChatService {
     }
 
     public String chat(String requestId, String message) {
+        return chat(requestId, message, null);
+    }
+
+    public String chat(String requestId, String message, String conversationId) {
         if (!active.compareAndSet(false, true)) {
             throw new ChatException(ChatFailure.BUSY);
         }
         Future<String> task;
         try {
-            task = executor.submit(() -> codex.chat(requestId, message));
+            task = executor.submit(() -> codex.chat(requestId, message, conversationId));
         } catch (RuntimeException exception) {
             active.set(false);
             throw new ChatException(ChatFailure.UNAVAILABLE, exception);
