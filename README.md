@@ -201,7 +201,7 @@ Docker CLI/Compose работают через Docker socket хоста.
 | Variable | `COMPOSE_PROJECT_NAME` | Необязательно; по умолчанию `cli-to-chat-chatgpt` |
 
 Раннер должен иметь labels `self-hosted`, `ci`, доступ к
-`/var/run/docker.sock` хоста и поддерживать обычные job containers, как в Java CI.
+`/var/run/docker.sock` хоста и поддерживать обычные job containers.
 Его workspace должен быть доступен этим контейнерам через mounts раннера.
 Job получает socket; одноразовый `curlimages/curl:8.22.0` с `--network host`
 проверяет HTTP через loopback хоста. Сам job остаётся в сети GitHub runner.
@@ -268,7 +268,8 @@ docker compose logs --tail 100 codex
 
 ## Проверки Java CI и SonarQube Cloud
 
-На PR в `main` и push в `main` выполняются Maven build/tests, затем анализ
+На PR в `main` и push в `main` на GitHub-hosted runner `ubuntu-24.04`
+в контейнере Maven 3.9.16 / Java 21 выполняются Maven build/tests, затем анализ
 SonarQube Cloud (`https://sonarcloud.io`) с ожиданием Quality Gate до 300 секунд.
 Ошибка сборки, анализа или Quality Gate завершает CI ошибкой. JaCoCo XML
 передаётся Sonar; условия качества и coverage задаются в Quality Gate проекта.
@@ -294,17 +295,12 @@ Secrets and variables → Actions добавьте:
 в `quality-reports`. После настройки проверьте push/PR run и coverage в Sonar.
 CI не блокирует существующий Deploy; required checks для merge задаются в GitHub.
 
+Явные лимиты CPU/памяти контейнера и JVM в workflow не заданы;
+JVM использует автоматические настройки в пределах ресурсов GitHub runner.
 Кеши Maven/Sonar хранятся в `/tmp` временного job container без host bind.
 После загрузки отчётов workflow удаляет `target`, включая при ошибке проверки.
-Workspace и служебные логи GitHub runner остаются; авария раннера может прервать
-очистку. Прежний `/srv/github-runner/ci/cache/m2` автоматически не удаляется.
 
-Sonar использует HTTP-прокси `gost:8080` без HTTP-авторизации. GitHub Variable
-`PROXY_NETWORK_NAME` должна указывать существующую сеть GOST на Docker-хосте
-раннера (та же переменная используется Deploy). Перед анализом одноразовый
-Docker helper подключает CI-контейнер к этой сети; GOST не пересоздаётся.
-Через прокси идут подключения сканера Sonar, включая скачивание JRE/движка;
-Maven Central, checkout и загрузка отчётов используют прежние прямые подключения.
-При завершении job runner удаляет CI-контейнер вместе с подключением к сети;
-сама proxy-сеть сохраняется. Ошибка подключения блокирует анализ: проверьте
-переменную, наличие сети/alias `gost`, HTTP CONNECT на 8080 и логи CI.
+Sonar, скачивание JRE/движка, Maven Central, checkout и загрузка отчётов
+используют прямые подключения с GitHub runner. Прокси и доступ к локальной
+Docker-сети для Java CI не нужны. `PROXY_NETWORK_NAME` остаётся необходимой
+для self-hosted Deploy и приложения.

@@ -16,25 +16,18 @@ concurrency:
 jobs:
   quality:
     name: PR Quality
-    runs-on: [self-hosted, ci]
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
 
     container:
       image: maven:3.9.16-eclipse-temurin-21
-      options: >-
-        --memory=1400m
-        --cpus=1
 
     defaults:
       run:
         shell: bash
 
     env:
-      MAVEN_OPTS: >-
-        -Xms128m
-        -Xmx768m
-        -XX:MaxMetaspaceSize=256m
-        -Dmaven.repo.local=/tmp/m2
+      MAVEN_OPTS: -Dmaven.repo.local=/tmp/m2
       SONAR_USER_HOME: /tmp/sonar
 
     steps:
@@ -51,29 +44,8 @@ jobs:
       - name: Build and tests
         run: mvn --batch-mode --no-transfer-progress -Dmaven.test.failure.ignore=true clean verify
 
-      - name: Prepare proxy network connection
-        run: |
-          mkdir -p target
-          cat > target/ci-connect-proxy.sh <<'BASH'
-          : "${PROXY_NETWORK_NAME:?Set GitHub variable PROXY_NETWORK_NAME}"
-          : "${CI_CONTAINER_ID:?Missing CI job container ID}"
-          docker network connect -- "$PROXY_NETWORK_NAME" "$CI_CONTAINER_ID"
-          BASH
-
-      - name: Connect CI container to proxy network
-        uses: docker://ghcr.io/catthehacker/ubuntu:act-24.04
-        env:
-          DOCKER_HOST: unix:///var/run/docker.sock
-          PROXY_NETWORK_NAME: ${{ vars.PROXY_NETWORK_NAME }}
-          CI_CONTAINER_ID: ${{ job.container.id }}
-        with:
-          entrypoint: bash
-          args: -euo pipefail target/ci-connect-proxy.sh
-
       - name: SonarQube Cloud analysis and Quality Gate
         env:
-          SONAR_SCANNER_PROXY_HOST: gost
-          SONAR_SCANNER_PROXY_PORT: "8080"
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
           SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
