@@ -1,5 +1,6 @@
 services:
   codex:
+    container_name: CLI-codex
     build:
       context: .
       dockerfile: docker/codex/Dockerfile
