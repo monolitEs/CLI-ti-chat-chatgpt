@@ -1,4 +1,4 @@
-package org.monolit.clitochatchatgpt.client;
+package org.monolit.clitochatchatgpt.persistence;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
