@@ -42,9 +42,12 @@ public class ChatRequestFilter extends OncePerRequestFilter {
                 log.info("Chat request completed requestId={} durationMs={}", requestId, durationMs);
             } else {
                 var code = request.getAttribute(ERROR_CODE_ATTRIBUTE);
+                if (code == null) {
+                    var status = completed ? response.getStatus() : 500;
+                    code = "HTTP_" + status;
+                }
                 log.warn("Chat request failed requestId={} code={} durationMs={}",
-                        requestId, code == null ? "HTTP_" + (completed ? response.getStatus() : 500) : code,
-                        durationMs);
+                        requestId, code, durationMs);
             }
         }
     }
