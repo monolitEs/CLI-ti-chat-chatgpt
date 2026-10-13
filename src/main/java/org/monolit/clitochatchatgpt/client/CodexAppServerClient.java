@@ -23,7 +23,6 @@ public class CodexAppServerClient {
 
     private final ObjectMapper json;
     private final ProcessStarter processStarter;
-    private final ConversationStore conversations;
     private final AtomicLong requestIds = new AtomicLong();
 
     private static final String METHOD = "method";
@@ -34,32 +33,19 @@ public class CodexAppServerClient {
     private volatile ActiveTurn activeTurn;
 
     @Autowired
-    public CodexAppServerClient(ObjectMapper json, @Value("${codex.command:codex}") String command,
-            ConversationStore conversations) {
+    public CodexAppServerClient(ObjectMapper json, @Value("${codex.command:codex}") String command) {
         this(json, () -> new ProcessBuilder(command, "app-server", "--strict-config")
                 .redirectError(ProcessBuilder.Redirect.INHERIT)
-                .start(), conversations);
+                .start());
     }
 
     CodexAppServerClient(ObjectMapper json, ProcessStarter processStarter) {
-        this(json, processStarter, null);
-    }
-
-    CodexAppServerClient(ObjectMapper json, ProcessStarter processStarter, ConversationStore conversations) {
         this.json = json;
         this.processStarter = processStarter;
-        this.conversations = conversations;
     }
 
-    public String chat(String requestId, String message) {
-        return chat(requestId, message, null);
-    }
-
-    public String chat(String requestId, String message, String conversationId) {
-        ensureStarted();
+    public String runTurn(String requestId, String message, String threadId) {
         try {
-            var threadId = prepareThread(conversationId);
-
             var turnRequestId = nextId();
             send(Map.of(
                     METHOD, "turn/start",
@@ -91,31 +77,27 @@ public class CodexAppServerClient {
         }
     }
 
-    private String prepareThread(String conversationId) throws IOException {
-        var storedId = conversationId == null ? null : conversations.find(conversationId);
+    public String resumeThread(String threadId) throws IOException {
         var threadRequestId = nextId();
-        if (storedId != null) {
-            send(Map.of(METHOD, "thread/resume", "id", threadRequestId,
-                    "params", Map.of("threadId", storedId)));
-            var resumedId = requiredText(readResponse(threadRequestId), "/result/thread/id");
-            if (!storedId.equals(resumedId)) {
-                throw new CodexException(CodexFailure.PROTOCOL, "Resumed thread ID does not match");
-            }
-            return resumedId;
+        send(Map.of(METHOD, "thread/resume", "id", threadRequestId,
+                "params", Map.of("threadId", threadId)));
+        var resumedId = requiredText(readResponse(threadRequestId), "/result/thread/id");
+        if (!threadId.equals(resumedId)) {
+            throw new CodexException(CodexFailure.PROTOCOL, "Resumed thread ID does not match");
         }
+        return resumedId;
+    }
+
+    public String startThread(boolean ephemeral) throws IOException {
+        var threadRequestId = nextId();
         send(Map.of(
                 METHOD, "thread/start",
                 "id", threadRequestId,
                 "params", Map.of(
                         "serviceName", "cli_to_chat_chatgpt",
-                        "ephemeral", conversationId == null)));
+                        "ephemeral", ephemeral)));
         var threadResponse = readResponse(threadRequestId);
-        var threadId = requiredText(threadResponse, "/result/thread/id");
-
-        if (conversationId != null) {
-            conversations.save(conversationId, threadId);
-        }
-        return threadId;
+        return requiredText(threadResponse, "/result/thread/id");
     }
 
     public void interruptActiveTurn() {
@@ -134,7 +116,7 @@ public class CodexAppServerClient {
         }
     }
 
-    private synchronized void ensureStarted() {
+    public synchronized void ensureStarted() {
         if (process != null && process.isAlive()) {
             return;
         }

@@ -1,21 +1,25 @@
 package org.monolit.clitochatchatgpt.service;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.stubbing.Answer;
+import org.monolit.clitochatchatgpt.client.CodexAppServerClient;
+import org.monolit.clitochatchatgpt.model.enums.ChatFailure;
+import org.monolit.clitochatchatgpt.model.exceptions.ChatException;
+import org.monolit.clitochatchatgpt.persistence.ConversationStore;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
-import org.monolit.clitochatchatgpt.client.CodexAppServerClient;
-import org.monolit.clitochatchatgpt.model.enums.ChatFailure;
-import org.monolit.clitochatchatgpt.model.exceptions.ChatException;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.*;
 
 class ChatServiceTests {
 
@@ -28,17 +32,23 @@ class ChatServiceTests {
         }
     }
 
+    private static ChatService create(CodexAppServerClient codex, ConversationService conversations, Duration timeout,
+            Duration grace) {
+        return new ChatService(codex, conversations, timeout, grace, Executors.newVirtualThreadPerTaskExecutor());
+    }
+
     @Test
     void rejectsSecondRequestWhileFirstIsActive() throws Exception {
         var codex = mock(CodexAppServerClient.class);
+        var conversations = mock(ConversationService.class);
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
-        when(codex.chat("req-1", "first", "dialog-a")).thenAnswer(invocation -> {
+        when(conversations.chat("req-1", "first", "dialog-a")).thenAnswer(invocation -> {
             entered.countDown();
             release.await();
             return "done";
         });
-        service = create(codex, Duration.ofSeconds(2), Duration.ofMillis(20));
+        service = create(codex, conversations, Duration.ofSeconds(2), Duration.ofMillis(20));
 
         var caller = Executors.newVirtualThreadPerTaskExecutor();
         try {
@@ -60,12 +70,13 @@ class ChatServiceTests {
     @Test
     void interruptsAndResetsCodexAfterTimeoutWithoutTerminalEvent() throws Exception {
         var codex = mock(CodexAppServerClient.class);
+        var conversations = mock(ConversationService.class);
         var blocked = new CountDownLatch(1);
-        when(codex.chat("req-1", "slow", null)).thenAnswer(invocation -> {
+        when(conversations.chat("req-1", "slow", null)).thenAnswer(invocation -> {
             blocked.await();
             return "late";
         });
-        service = create(codex, Duration.ofMillis(20), Duration.ofMillis(20));
+        service = create(codex, conversations, Duration.ofMillis(20), Duration.ofMillis(20));
 
         assertThatThrownBy(() -> service.chat("req-1", "slow"))
                 .isInstanceOfSatisfying(ChatException.class,
@@ -76,8 +87,46 @@ class ChatServiceTests {
         verify(codex).reset();
     }
 
-    private static ChatService create(CodexAppServerClient codex, Duration timeout,
-            Duration grace) {
-        return new ChatService(codex, timeout, grace, Executors.newVirtualThreadPerTaskExecutor());
+    @ParameterizedTest
+    @ValueSource(strings = {"read", "start", "save"})
+    void keepsPreparationInsideSingleFlightAndTimeout(String phase) throws Exception {
+        var codex = mock(CodexAppServerClient.class);
+        var store = mock(ConversationStore.class);
+        var entered = new CountDownLatch(1);
+        var blocked = new CountDownLatch(1);
+        Answer<Object> block = invocation -> {
+            entered.countDown();
+            try {
+                blocked.await();
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted test preparation", exception);
+            }
+            return null;
+        };
+        when(codex.startThread(false)).thenReturn("thr_1");
+        switch (phase) {
+            case "read" -> when(store.find("a")).thenAnswer(block);
+            case "start" -> when(codex.startThread(false)).thenAnswer(block);
+            case "save" -> doAnswer(block).when(store).save("a", "thr_1");
+            default -> throw new IllegalArgumentException(phase);
+        }
+        service = create(codex, new ConversationService(codex, store),
+                Duration.ofMillis(300), Duration.ofMillis(20));
+
+        try (var caller = Executors.newVirtualThreadPerTaskExecutor()) {
+            var first = caller.submit(() -> service.chat("req-1", "slow", "a"));
+            assertThat(entered.await(1, TimeUnit.SECONDS)).isTrue();
+            assertThatThrownBy(() -> service.chat("req-2", "second", "b"))
+                    .isInstanceOfSatisfying(ChatException.class,
+                            exception -> assertThat(exception.failure()).isEqualTo(ChatFailure.BUSY));
+            assertThatThrownBy(() -> first.get(2, TimeUnit.SECONDS))
+                    .hasCauseInstanceOf(ChatException.class)
+                    .satisfies(exception -> assertThat(((ChatException) exception.getCause()).failure())
+                            .isEqualTo(ChatFailure.TIMEOUT));
+        }
+        verify(codex).interruptActiveTurn();
+        verify(codex, org.mockito.Mockito.atLeastOnce()).reset();
+        verify(codex, never()).runTurn(anyString(), anyString(), anyString());
     }
 }
