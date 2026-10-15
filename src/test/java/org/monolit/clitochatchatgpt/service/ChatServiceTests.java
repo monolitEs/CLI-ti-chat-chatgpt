@@ -6,6 +6,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.stubbing.Answer;
 import org.monolit.clitochatchatgpt.client.CodexAppServerClient;
+import org.monolit.clitochatchatgpt.model.dto.ModelSettingsResponse;
 import org.monolit.clitochatchatgpt.model.enums.ChatFailure;
 import org.monolit.clitochatchatgpt.model.exceptions.ChatException;
 import org.monolit.clitochatchatgpt.persistence.ConversationStore;
@@ -128,5 +129,62 @@ class ChatServiceTests {
         verify(codex).interruptActiveTurn();
         verify(codex, org.mockito.Mockito.atLeastOnce()).reset();
         verify(codex, never()).runTurn(anyString(), anyString(), anyString());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"get", "put", "chat"})
+    void allOperationsShareOneSlot(String operation) throws Exception {
+        var codex = mock(CodexAppServerClient.class);
+        var conversations = mock(ConversationService.class);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        Answer<Object> block = invocation -> {
+            entered.countDown();
+            release.await();
+            return operation.equals("chat") ? "done" : new ModelSettingsResponse("req", "a", "m", "high");
+        };
+        switch (operation) {
+            case "get" -> when(conversations.getSettings("req", "a")).thenAnswer(block);
+            case "put" -> when(conversations.updateSettings("req", "a", "m", "high")).thenAnswer(block);
+            default -> when(conversations.chat("req", "msg", "a")).thenAnswer(block);
+        }
+        service = create(codex, conversations, Duration.ofSeconds(3), Duration.ofMillis(20));
+        try (var caller = Executors.newVirtualThreadPerTaskExecutor()) {
+            var first = caller.submit(() -> switch (operation) {
+                case "get" -> service.getSettings("req", "a");
+                case "put" -> service.updateSettings("req", "a", "m", "high");
+                default -> service.chat("req", "msg", "a");
+            });
+            try {
+                assertThat(entered.await(1, TimeUnit.SECONDS)).isTrue();
+                assertThatThrownBy(() -> service.getSettings("other", "b"))
+                        .isInstanceOfSatisfying(ChatException.class, e -> assertThat(e.failure()).isEqualTo(ChatFailure.BUSY));
+                assertThatThrownBy(() -> service.updateSettings("other", "b", "m", "low"))
+                        .isInstanceOfSatisfying(ChatException.class, e -> assertThat(e.failure()).isEqualTo(ChatFailure.BUSY));
+                assertThatThrownBy(() -> service.chat("other", "msg", "b"))
+                        .isInstanceOfSatisfying(ChatException.class, e -> assertThat(e.failure()).isEqualTo(ChatFailure.BUSY));
+            } finally {
+                release.countDown();
+            }
+            assertThat(first.get(1, TimeUnit.SECONDS)).isNotNull();
+        }
+    }
+
+    @Test
+    void settingsTimeoutUsesExistingInterruptResetPathAndReleasesSlot() throws IOException {
+        var codex = mock(CodexAppServerClient.class);
+        var store = mock(ConversationStore.class);
+        when(store.find("a")).thenReturn("t");
+        when(codex.readSettings("t")).thenAnswer(invocation -> {
+            new CountDownLatch(1).await();
+            return null;
+        });
+        service = create(codex, new ConversationService(codex, store), Duration.ofMillis(50), Duration.ofMillis(20));
+        assertThatThrownBy(() -> service.getSettings("req", "a"))
+                .isInstanceOfSatisfying(ChatException.class, e -> assertThat(e.failure()).isEqualTo(ChatFailure.TIMEOUT));
+        verify(codex).interruptActiveTurn();
+        verify(codex, atLeastOnce()).reset();
+        assertThatThrownBy(() -> service.getSettings("next", "missing"))
+                .isInstanceOfSatisfying(ChatException.class, e -> assertThat(e.failure()).isEqualTo(ChatFailure.CONVERSATION_NOT_FOUND));
     }
 }

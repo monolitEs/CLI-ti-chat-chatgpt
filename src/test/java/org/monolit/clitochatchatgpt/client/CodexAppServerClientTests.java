@@ -1,6 +1,8 @@
 package org.monolit.clitochatchatgpt.client;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.monolit.clitochatchatgpt.model.enums.CodexFailure;
 import org.monolit.clitochatchatgpt.model.exceptions.CodexException;
 import org.monolit.clitochatchatgpt.utils.FakeCodexProcess;
@@ -132,6 +134,110 @@ class CodexAppServerClientTests {
             Thread.sleep(5);
         }
         assertThat(process.requests()).contains(fragment);
+    }
+
+    private static String settingsPrefix() {
+        return """
+                {"id":1,"result":{}}
+                {"id":2,"result":{"requiresOpenaiAuth":false}}
+                """;
+    }
+
+    @Test
+    void readsNullableMetadataWithoutResumingOrSendingTurn() throws IOException {
+        var process = new FakeCodexProcess(settingsPrefix() + """
+                {"id":3,"result":{"thread":{"id":"t","model":null,"reasoningEffort":null}}}
+                """);
+        var client = process.client(JsonMapper.builder().build());
+        client.ensureStarted();
+        var settings = client.readSettings("t");
+        assertThat(settings.getModel()).isNull();
+        assertThat(settings.getReasoningEffort()).isNull();
+        assertThat(process.requests()).contains("\"includeTurns\":false")
+                .doesNotContain("thread/resume", "turn/start", "thread/start");
+    }
+
+    @Test
+    void validatesPairAcrossCatalogPagesWithoutChangingThread() throws IOException {
+        var process = new FakeCodexProcess(settingsPrefix() + """
+                {"id":3,"result":{"data":[{"model":"other"}],"nextCursor":"next"}}
+                {"id":4,"result":{"data":[{"model":"m","supportedReasoningEfforts":[{"reasoningEffort":"future-effort"}]}],"nextCursor":null}}
+                """);
+        var client = process.client(JsonMapper.builder().build());
+        client.ensureStarted();
+        assertThat(client.supportsSettings("m", "future-effort")).isTrue();
+        assertThat(process.requests()).contains("\"cursor\":\"next\"")
+                .doesNotContain("thread/resume", "thread/unsubscribe", "turn/start");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"missing", "unsupported"})
+    void rejectsUnadvertisedPair(String model) throws IOException {
+        var process = new FakeCodexProcess(settingsPrefix() + """
+                {"id":3,"result":{"data":[{"model":"unsupported","supportedReasoningEfforts":[{"reasoningEffort":"low"}]}],"nextCursor":null}}
+                """);
+        var client = process.client(JsonMapper.builder().build());
+        client.ensureStarted();
+        assertThat(client.supportsSettings(model, "high")).isFalse();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "{\"data\":null,\"nextCursor\":null}",
+            "{\"data\":[{\"model\":\"m\",\"supportedReasoningEfforts\":null}],\"nextCursor\":null}",
+            "{\"data\":[{\"model\":\"m\",\"supportedReasoningEfforts\":[{}]}],\"nextCursor\":null}",
+            "{\"data\":[],\"nextCursor\":123}"})
+    void classifiesMalformedCatalogAsProtocolFailure(String result) {
+        var process = new FakeCodexProcess(settingsPrefix() + "{\"id\":3,\"result\":" + result + "}\n");
+        var client = process.client(JsonMapper.builder().build());
+        client.ensureStarted();
+        assertThatThrownBy(() -> client.supportsSettings("m", "high"))
+                .isInstanceOfSatisfying(CodexException.class, e -> assertThat(e.kind()).isEqualTo(CodexFailure.PROTOCOL));
+    }
+
+    @Test
+    void detectsRepeatedCatalogCursor() {
+        var page = "{\"id\":%d,\"result\":{\"data\":[],\"nextCursor\":\"same\"}}\n";
+        var process = new FakeCodexProcess(settingsPrefix() + page.formatted(3) + page.formatted(4));
+        var client = process.client(JsonMapper.builder().build());
+        client.ensureStarted();
+        assertThatThrownBy(() -> client.supportsSettings("m", "high"))
+                .isInstanceOfSatisfying(CodexException.class, e -> assertThat(e.kind()).isEqualTo(CodexFailure.PROTOCOL));
+    }
+
+    @Test
+    void unsubscribesBeforeResumeAndConfirmsSettingsThroughRead() throws IOException {
+        var process = new FakeCodexProcess(settingsPrefix() + """
+                {"id":3,"result":{"status":"unsubscribed"}}
+                {"id":4,"result":{"thread":{"id":"t"},"model":"m","reasoningEffort":"high"}}
+                {"id":5,"result":{"thread":{"id":"t","model":"m","reasoningEffort":"high"}}}
+                """);
+        var mapper = JsonMapper.builder().build();
+        var client = process.client(mapper);
+        client.ensureStarted();
+        var settings = client.updateSettings("t", "m", "high");
+        assertThat(settings.getModel()).isEqualTo("m");
+        assertThat(settings.getReasoningEffort()).isEqualTo("high");
+        var requests = process.requests().lines().map(mapper::readTree).toList();
+        assertThat(requests.stream().map(n -> n.path("method").asString()))
+                .containsExactly("initialize", "initialized", "account/read", "thread/unsubscribe", "thread/resume", "thread/read");
+        assertThat(requests.get(4).at("/params/config/model_reasoning_effort").asString()).isEqualTo("high");
+        assertThat(requests.get(4).at("/params/model").asString()).isEqualTo("m");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"other", "t"})
+    void rejectsWrongThreadOrUnappliedSettings(String returnedId) {
+        var process = new FakeCodexProcess(settingsPrefix() + """
+                {"id":3,"result":{"status":"notLoaded"}}
+                {"id":4,"result":{"thread":{"id":"%s"}}}
+                {"id":5,"result":{"thread":{"id":"t","model":"old","reasoningEffort":"low"}}}
+                """.formatted(returnedId));
+        var client = process.client(JsonMapper.builder().build());
+        client.ensureStarted();
+        assertThatThrownBy(() -> client.updateSettings("t", "m", "high"))
+                .isInstanceOfSatisfying(CodexException.class, e -> assertThat(e.kind()).isEqualTo(CodexFailure.PROTOCOL));
+        assertThat(process.requests()).doesNotContain("turn/start", "thread/start");
     }
 
     private static final class StreamingProcess extends Process {

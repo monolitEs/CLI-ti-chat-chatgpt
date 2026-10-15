@@ -2,6 +2,7 @@ package org.monolit.clitochatchatgpt.client;
 
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
+import org.monolit.clitochatchatgpt.model.dto.ModelSettingsResponse;
 import org.monolit.clitochatchatgpt.model.enums.CodexFailure;
 import org.monolit.clitochatchatgpt.model.exceptions.CodexException;
 import org.monolit.clitochatchatgpt.model.records.ActiveTurn;
@@ -13,6 +14,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
@@ -88,6 +90,13 @@ public class CodexAppServerClient {
         return resumedId;
     }
 
+    private static String nullableText(JsonNode node) {
+        if (node.isNull()) {
+            return null;
+        }
+        return requiredText(node, "");
+    }
+
     public String startThread(boolean ephemeral) throws IOException {
         var threadRequestId = nextId();
         send(Map.of(
@@ -98,6 +107,69 @@ public class CodexAppServerClient {
                         "ephemeral", ephemeral)));
         var threadResponse = readResponse(threadRequestId);
         return requiredText(threadResponse, "/result/thread/id");
+    }
+
+    public ModelSettingsResponse readSettings(String threadId) throws IOException {
+        var thread = request("thread/read", Map.of("threadId", threadId, "includeTurns", false)).path("thread");
+        if (!threadId.equals(requiredText(thread, "/id"))) {
+            throw new CodexException(CodexFailure.PROTOCOL, "Read thread ID does not match");
+        }
+        return new ModelSettingsResponse(null, null, nullableText(thread.path("model")),
+                nullableText(thread.path("reasoningEffort")));
+    }
+
+    public ModelSettingsResponse updateSettings(String threadId, String model, String effort) throws IOException {
+        // Pinned CLI 0.159.3 rejoins loaded threads without applying resume overrides.
+        request("thread/unsubscribe", Map.of("threadId", threadId));
+        var resumed = request("thread/resume", Map.of("threadId", threadId, "model", model,
+                "config", Map.of("model_reasoning_effort", effort)));
+        if (!threadId.equals(requiredText(resumed, "/thread/id"))) {
+            throw new CodexException(CodexFailure.PROTOCOL, "Resumed thread ID does not match");
+        }
+        var settings = readSettings(threadId);
+        if (!model.equals(settings.getModel()) || !effort.equals(settings.getReasoningEffort())) {
+            throw new CodexException(CodexFailure.PROTOCOL, "Codex did not apply requested settings");
+        }
+        return settings;
+    }
+
+    public boolean supportsSettings(String model, String effort) throws IOException {
+        String cursor = null;
+        var seenCursors = new HashSet<String>();
+        do {
+            var params = cursor == null ? Map.<String, Object>of("limit", 100)
+                    : Map.<String, Object>of("limit", 100, "cursor", cursor);
+            var result = request("model/list", params);
+            var models = result.path("data");
+            if (!models.isArray()) {
+                throw new CodexException(CodexFailure.PROTOCOL, "Model catalog is not an array");
+            }
+            for (var entry : models) {
+                if (!model.equals(requiredText(entry, "/model"))) {
+                    continue;
+                }
+                var efforts = entry.path("supportedReasoningEfforts");
+                if (!efforts.isArray()) {
+                    throw new CodexException(CodexFailure.PROTOCOL, "Model efforts are not an array");
+                }
+                for (var supported : efforts) {
+                    if (effort.equals(requiredText(supported, "/reasoningEffort"))) {
+                        return true;
+                    }
+                }
+            }
+            cursor = nullableText(result.path("nextCursor"));
+            if (cursor != null && !seenCursors.add(cursor)) {
+                throw new CodexException(CodexFailure.PROTOCOL, "Model catalog cursor repeated");
+            }
+        } while (cursor != null);
+        return false;
+    }
+
+    private JsonNode request(String method, Map<String, Object> params) throws IOException {
+        var id = nextId();
+        send(Map.of(METHOD, method, "id", id, "params", params));
+        return readResponse(id).path("result");
     }
 
     public void interruptActiveTurn() {

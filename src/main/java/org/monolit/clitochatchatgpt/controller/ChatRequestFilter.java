@@ -21,8 +21,13 @@ public class ChatRequestFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return !"POST".equals(request.getMethod())
-                || !(request.getContextPath() + "/api/chat").equals(request.getRequestURI());
+        var path = request.getRequestURI();
+        var base = request.getContextPath() + "/api/chat";
+        return switch (request.getMethod()) {
+            case "POST" -> !base.equals(path);
+            case "GET", "PUT" -> !(base + "/settings").equals(path);
+            default -> true;
+        };
     }
 
     @Override

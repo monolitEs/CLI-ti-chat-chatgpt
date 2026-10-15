@@ -2,6 +2,7 @@ package org.monolit.clitochatchatgpt.service;
 
 import jakarta.annotation.PreDestroy;
 import org.monolit.clitochatchatgpt.client.CodexAppServerClient;
+import org.monolit.clitochatchatgpt.model.dto.ModelSettingsResponse;
 import org.monolit.clitochatchatgpt.model.enums.ChatFailure;
 import org.monolit.clitochatchatgpt.model.exceptions.ChatException;
 import org.monolit.clitochatchatgpt.model.exceptions.CodexException;
@@ -43,13 +44,40 @@ public class ChatService {
         return chat(requestId, message, null);
     }
 
+    private static ChatException mapFailure(Throwable cause) {
+        if (cause instanceof ChatException chatException) {
+            return chatException;
+        }
+        if (cause instanceof CodexException codexException) {
+            var failure = switch (codexException.kind()) {
+                case NOT_AUTHENTICATED -> ChatFailure.NOT_AUTHENTICATED;
+                case UNAVAILABLE -> ChatFailure.UNAVAILABLE;
+                case PROTOCOL, TURN_FAILED -> ChatFailure.BAD_GATEWAY;
+            };
+            return new ChatException(failure, cause);
+        }
+        return new ChatException(ChatFailure.UNAVAILABLE, cause);
+    }
+
     public String chat(String requestId, String message, String conversationId) {
+        return execute(() -> conversations.chat(requestId, message, conversationId));
+    }
+
+    public ModelSettingsResponse getSettings(String requestId, String conversationId) {
+        return execute(() -> conversations.getSettings(requestId, conversationId));
+    }
+
+    public ModelSettingsResponse updateSettings(String requestId, String conversationId, String model, String effort) {
+        return execute(() -> conversations.updateSettings(requestId, conversationId, model, effort));
+    }
+
+    private <T> T execute(Callable<T> operation) {
         if (!active.compareAndSet(false, true)) {
             throw new ChatException(ChatFailure.BUSY);
         }
-        Future<String> task;
+        Future<T> task;
         try {
-            task = executor.submit(() -> conversations.chat(requestId, message, conversationId));
+            task = executor.submit(operation);
         } catch (RuntimeException exception) {
             active.set(false);
             throw new ChatException(ChatFailure.UNAVAILABLE, exception);
@@ -71,7 +99,7 @@ public class ChatService {
         }
     }
 
-    private void interruptAndAwait(Future<String> task) {
+    private void interruptAndAwait(Future<?> task) {
         codex.interruptActiveTurn();
         try {
             task.get(interruptGrace.toMillis(), TimeUnit.MILLISECONDS);
@@ -83,18 +111,6 @@ public class ChatService {
             Thread.currentThread().interrupt();
             codex.reset();
         }
-    }
-
-    private static ChatException mapFailure(Throwable cause) {
-        if (cause instanceof CodexException codexException) {
-            var failure = switch (codexException.kind()) {
-                case NOT_AUTHENTICATED -> ChatFailure.NOT_AUTHENTICATED;
-                case UNAVAILABLE -> ChatFailure.UNAVAILABLE;
-                case PROTOCOL, TURN_FAILED -> ChatFailure.BAD_GATEWAY;
-            };
-            return new ChatException(failure, cause);
-        }
-        return new ChatException(ChatFailure.UNAVAILABLE, cause);
     }
 
     @PreDestroy

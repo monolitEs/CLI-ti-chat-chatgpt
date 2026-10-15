@@ -4,7 +4,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.monolit.clitochatchatgpt.client.CodexAppServerClient;
+import org.monolit.clitochatchatgpt.model.dto.ModelSettingsResponse;
+import org.monolit.clitochatchatgpt.model.enums.ChatFailure;
 import org.monolit.clitochatchatgpt.model.enums.CodexFailure;
+import org.monolit.clitochatchatgpt.model.exceptions.ChatException;
 import org.monolit.clitochatchatgpt.model.exceptions.CodexException;
 import org.monolit.clitochatchatgpt.persistence.ConversationStore;
 import org.monolit.clitochatchatgpt.utils.FakeCodexProcess;
@@ -204,6 +208,67 @@ class ConversationServiceTests {
         } else {
             assertThat(file).doesNotExist();
         }
+    }
+
+    @Test
+    void settingsUseExistingMappingAndDoNotChangeStore() throws IOException {
+        var codex = mock(CodexAppServerClient.class);
+        var store = mock(ConversationStore.class);
+        when(store.find("a")).thenReturn("thread-a");
+        when(codex.readSettings("thread-a")).thenReturn(new ModelSettingsResponse(null, null, null, null));
+        when(codex.supportsSettings("m", "high")).thenReturn(true);
+        when(codex.updateSettings("thread-a", "m", "high"))
+                .thenReturn(new ModelSettingsResponse(null, null, "m", "high"));
+        var service = new ConversationService(codex, store);
+        assertThat(service.getSettings("req", "a").getConversationId()).isEqualTo("a");
+        var result = service.updateSettings("req", "a", "m", "high");
+        assertThat(result.getRequestId()).isEqualTo("req");
+        assertThat(result.getModel()).isEqualTo("m");
+        verify(store, times(2)).find("a");
+        verifyNoMoreInteractions(store);
+        verify(codex, never()).startThread(anyBoolean());
+        verify(codex, never()).runTurn(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void unknownSettingsIdDoesNotStartBackendOrCreateMapping() throws IOException {
+        var codex = mock(CodexAppServerClient.class);
+        var store = mock(ConversationStore.class);
+        var service = new ConversationService(codex, store);
+        assertThatThrownBy(() -> service.getSettings("req", "missing"))
+                .isInstanceOfSatisfying(ChatException.class, e -> assertThat(e.failure()).isEqualTo(ChatFailure.CONVERSATION_NOT_FOUND));
+        assertThatThrownBy(() -> service.updateSettings("req", "missing", "m", "high"))
+                .isInstanceOfSatisfying(ChatException.class, e -> assertThat(e.failure()).isEqualTo(ChatFailure.CONVERSATION_NOT_FOUND));
+        verifyNoInteractions(codex);
+        verify(store, never()).save(anyString(), anyString());
+    }
+
+    @Test
+    void invalidPairDoesNotChangeThreadOrResetHealthyBackend() throws IOException {
+        var codex = mock(CodexAppServerClient.class);
+        var store = mock(ConversationStore.class);
+        when(store.find("a")).thenReturn("t");
+        var service = new ConversationService(codex, store);
+        assertThatThrownBy(() -> service.updateSettings("req", "a", "m", "invalid"))
+                .isInstanceOfSatisfying(ChatException.class, e -> assertThat(e.failure()).isEqualTo(ChatFailure.MODEL_SETTINGS_INVALID));
+        verify(codex, never()).updateSettings(anyString(), anyString(), anyString());
+        verify(codex, never()).reset();
+    }
+
+    @Test
+    void backendAndStorageSettingsFailuresResetAndPreserveClassification() throws IOException {
+        var codex = mock(CodexAppServerClient.class);
+        var store = mock(ConversationStore.class);
+        when(store.find("a")).thenReturn("t");
+        when(codex.readSettings("t")).thenThrow(new CodexException(CodexFailure.PROTOCOL, "malformed"));
+        var service = new ConversationService(codex, store);
+        assertThatThrownBy(() -> service.getSettings("req", "a"))
+                .isInstanceOfSatisfying(CodexException.class, e -> assertThat(e.kind()).isEqualTo(CodexFailure.PROTOCOL));
+        when(store.find("a")).thenThrow(new IOException("corrupt store"));
+        assertThatThrownBy(() -> service.updateSettings("req", "a", "m", "high"))
+                .isInstanceOfSatisfying(CodexException.class, e -> assertThat(e.kind()).isEqualTo(CodexFailure.UNAVAILABLE));
+        verify(codex, times(2)).reset();
+        verify(codex, never()).updateSettings(anyString(), anyString(), anyString());
     }
 
 }
