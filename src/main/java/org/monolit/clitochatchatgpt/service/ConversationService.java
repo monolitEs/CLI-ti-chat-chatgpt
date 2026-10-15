@@ -2,7 +2,10 @@ package org.monolit.clitochatchatgpt.service;
 
 import lombok.extern.slf4j.Slf4j;
 import org.monolit.clitochatchatgpt.client.CodexAppServerClient;
+import org.monolit.clitochatchatgpt.model.dto.ModelSettingsResponse;
+import org.monolit.clitochatchatgpt.model.enums.ChatFailure;
 import org.monolit.clitochatchatgpt.model.enums.CodexFailure;
+import org.monolit.clitochatchatgpt.model.exceptions.ChatException;
 import org.monolit.clitochatchatgpt.model.exceptions.CodexException;
 import org.monolit.clitochatchatgpt.persistence.ConversationStore;
 import org.springframework.stereotype.Service;
@@ -50,5 +53,44 @@ public class ConversationService {
         var threadId = codex.startThread(false);
         conversations.save(conversationId, threadId);
         return threadId;
+    }
+
+    public ModelSettingsResponse getSettings(String requestId, String conversationId) {
+        return settings(requestId, conversationId, null, null);
+    }
+
+    public ModelSettingsResponse updateSettings(String requestId, String conversationId, String model, String effort) {
+        return settings(requestId, conversationId, model, effort);
+    }
+
+    private ModelSettingsResponse settings(String requestId, String conversationId, String model, String effort) {
+        try {
+            var threadId = conversations.find(conversationId);
+            if (threadId == null) {
+                throw new ChatException(ChatFailure.CONVERSATION_NOT_FOUND);
+            }
+            codex.ensureStarted();
+            ModelSettingsResponse result;
+            if (model == null) {
+                result = codex.readSettings(threadId);
+            } else {
+                if (!codex.supportsSettings(model, effort)) {
+                    throw new ChatException(ChatFailure.MODEL_SETTINGS_INVALID);
+                }
+                result = codex.updateSettings(threadId, model, effort);
+            }
+            return new ModelSettingsResponse(requestId, conversationId, result.getModel(), result.getReasoningEffort());
+        } catch (ChatException exception) {
+            throw exception;
+        } catch (IOException | RuntimeException exception) {
+            codex.reset();
+            log.warn("Codex settings failed requestId={} code={}", requestId,
+                    exception instanceof CodexException codexException
+                            ? codexException.kind() : CodexFailure.UNAVAILABLE);
+            if (exception instanceof CodexException codexException) {
+                throw codexException;
+            }
+            throw new CodexException(CodexFailure.UNAVAILABLE, "Codex settings failed", exception);
+        }
     }
 }

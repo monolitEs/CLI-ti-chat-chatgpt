@@ -24,6 +24,8 @@ jobs:
     env:
       DEPLOY_SHA: ${{ github.sha }}
       CODEX_DATA_DIR: ${{ vars.CODEX_DATA_DIR }}
+      CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+      CODEX_REASONING_EFFORT: ${{ vars.CODEX_REASONING_EFFORT }}
       PROXY_NETWORK_NAME: ${{ vars.PROXY_NETWORK_NAME }}
       COMPOSE_PROJECT_NAME: ${{ vars.COMPOSE_PROJECT_NAME || 'cli-to-chat-chatgpt' }}
       COMPOSE_ENV_FILES: /dev/null
@@ -51,7 +53,9 @@ jobs:
             --mount "type=bind,source=$CODEX_DATA_DIR,target=/auth-check,readonly" \
             ubuntu:24.04 test -d /auth-check
           docker compose --env-file /dev/null -f compose.yaml config --quiet
-          docker compose --env-file /dev/null -f compose.yaml build codex
+          docker compose --env-file /dev/null -f compose.yaml build \
+            --build-arg CODEX_MODEL="$CODEX_MODEL" \
+            --build-arg CODEX_REASONING_EFFORT="$CODEX_REASONING_EFFORT" codex
           docker pull curlimages/curl:8.22.0
 
       - name: Deploy

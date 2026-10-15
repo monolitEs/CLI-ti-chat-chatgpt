@@ -14,6 +14,8 @@ FROM eclipse-temurin:21-jre-jammy AS java-runtime
 FROM node:22.20.0-bookworm-slim
 
 ARG CODEX_VERSION=0.159.3
+ARG CODEX_MODEL=""
+ARG CODEX_REASONING_EFFORT=""
 
 ENV JAVA_HOME=/opt/java/openjdk
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
@@ -29,6 +31,16 @@ RUN set -eu; \
     npm cache clean --force; \
     useradd --create-home --uid 10001 --shell /usr/sbin/nologin codex; \
     mkdir -p /chat /opt/codex /home/codex/.codex; \
+    case "${CODEX_MODEL}${CODEX_REASONING_EFFORT}" in \
+      *[!A-Za-z0-9._:/-]*) echo 'Invalid CODEX_MODEL or CODEX_REASONING_EFFORT' >&2; exit 1 ;; \
+    esac; \
+    : > /opt/codex/config.toml; \
+    if [ -n "$CODEX_MODEL" ]; then \
+      printf 'model = "%s"\n' "$CODEX_MODEL" >> /opt/codex/config.toml; \
+    fi; \
+    if [ -n "$CODEX_REASONING_EFFORT" ]; then \
+      printf 'model_reasoning_effort = "%s"\n' "$CODEX_REASONING_EFFORT" >> /opt/codex/config.toml; \
+    fi; \
     printf '%s\n' \
       'approval_policy = "never"' \
       'sandbox_mode = "read-only"' \
@@ -66,7 +78,7 @@ RUN set -eu; \
       'apps = false' \
       'plugins = false' \
       'multi_agent = false' \
-      > /opt/codex/config.toml; \
+      >> /opt/codex/config.toml; \
     printf '%s\n' \
       'You are a conversational assistant.' \
       'Answer the user directly without inspecting files, running commands, using tools, or creating artifacts.' \
