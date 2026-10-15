@@ -25,6 +25,9 @@ import tools.jackson.databind.DatabindException;
 @NullMarked
 public class ChatExceptionHandler extends ResponseEntityExceptionHandler {
 
+    private static final String MODEL_SETTINGS_INVALID = "MODEL_SETTINGS_INVALID";
+    private static final String CONVERSATION_ID_INVALID = "CONVERSATION_ID_INVALID";
+
     private static ResponseEntity<Object> error(HttpStatus status, String code, WebRequest request) {
         var requestId = (String) request.getAttribute(ChatRequestFilter.REQUEST_ID_ATTRIBUTE,
                 RequestAttributes.SCOPE_REQUEST);
@@ -43,7 +46,7 @@ public class ChatExceptionHandler extends ResponseEntityExceptionHandler {
         return switch (exception.failure()) {
             case BUSY -> error(HttpStatus.CONFLICT, "CHAT_BUSY", request);
             case CONVERSATION_NOT_FOUND -> error(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", request);
-            case MODEL_SETTINGS_INVALID -> error(HttpStatus.BAD_REQUEST, "MODEL_SETTINGS_INVALID", request);
+            case MODEL_SETTINGS_INVALID -> error(HttpStatus.BAD_REQUEST, MODEL_SETTINGS_INVALID, request);
             case BAD_GATEWAY -> error(HttpStatus.BAD_GATEWAY, "CODEX_BAD_GATEWAY", request);
             case NOT_AUTHENTICATED -> error(HttpStatus.SERVICE_UNAVAILABLE,
                     "CODEX_NOT_AUTHENTICATED", request);
@@ -56,10 +59,10 @@ public class ChatExceptionHandler extends ResponseEntityExceptionHandler {
     protected ResponseEntity<Object> handleMethodArgumentNotValid(MethodArgumentNotValidException exception,
                                                                   HttpHeaders headers, HttpStatusCode status, WebRequest request) {
         if (exception.getBindingResult().getTarget() instanceof ModelSettingsRequest) {
-            return error(HttpStatus.BAD_REQUEST, "MODEL_SETTINGS_INVALID", request);
+            return error(HttpStatus.BAD_REQUEST, MODEL_SETTINGS_INVALID, request);
         }
         var code = exception.getBindingResult().hasFieldErrors("message")
-                ? "MESSAGE_REQUIRED" : "CONVERSATION_ID_INVALID";
+                ? "MESSAGE_REQUIRED" : CONVERSATION_ID_INVALID;
         return error(HttpStatus.BAD_REQUEST, code, request);
     }
 
@@ -67,7 +70,7 @@ public class ChatExceptionHandler extends ResponseEntityExceptionHandler {
     protected @Nullable ResponseEntity<Object> handleHttpMessageNotReadable(HttpMessageNotReadableException exception,
                                                                             HttpHeaders headers, HttpStatusCode status, WebRequest request) {
         if (isSettings(request)) {
-            return error(HttpStatus.BAD_REQUEST, "MODEL_SETTINGS_INVALID", request);
+            return error(HttpStatus.BAD_REQUEST, MODEL_SETTINGS_INVALID, request);
         }
         if (exception.getCause() == null) {
             return error(HttpStatus.BAD_REQUEST, "MESSAGE_REQUIRED", request);
@@ -75,7 +78,7 @@ public class ChatExceptionHandler extends ResponseEntityExceptionHandler {
         if (exception.getCause() instanceof DatabindException mappingException
                 && mappingException.getPath().stream()
                 .anyMatch(reference -> "conversationId".equals(reference.getPropertyName()))) {
-            return error(HttpStatus.BAD_REQUEST, "CONVERSATION_ID_INVALID", request);
+            return error(HttpStatus.BAD_REQUEST, CONVERSATION_ID_INVALID, request);
         }
         return super.handleHttpMessageNotReadable(exception, headers, status, request);
     }
@@ -83,7 +86,7 @@ public class ChatExceptionHandler extends ResponseEntityExceptionHandler {
     @Override
     protected ResponseEntity<Object> handleMissingServletRequestParameter(MissingServletRequestParameterException exception,
                                                                           HttpHeaders headers, HttpStatusCode status, WebRequest request) {
-        return error(HttpStatus.BAD_REQUEST, "CONVERSATION_ID_INVALID", request);
+        return error(HttpStatus.BAD_REQUEST, CONVERSATION_ID_INVALID, request);
     }
 
     @Override
@@ -91,6 +94,6 @@ public class ChatExceptionHandler extends ResponseEntityExceptionHandler {
                                                                             HttpHeaders headers, HttpStatusCode status, WebRequest request) {
         var invalidId = exception.getParameterValidationResults().stream()
                 .anyMatch(result -> "conversationId".equals(result.getMethodParameter().getParameterName()));
-        return error(HttpStatus.BAD_REQUEST, invalidId ? "CONVERSATION_ID_INVALID" : "MODEL_SETTINGS_INVALID", request);
+        return error(HttpStatus.BAD_REQUEST, invalidId ? CONVERSATION_ID_INVALID : MODEL_SETTINGS_INVALID, request);
     }
 }

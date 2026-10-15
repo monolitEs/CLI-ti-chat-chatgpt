@@ -133,6 +133,31 @@ public class CodexAppServerClient {
         return settings;
     }
 
+    private static boolean supportsSettingsOnPage(JsonNode models, String model, String effort) {
+        if (!models.isArray()) {
+            throw new CodexException(CodexFailure.PROTOCOL, "Model catalog is not an array");
+        }
+        for (var entry : models) {
+            if (model.equals(requiredText(entry, "/model"))
+                    && supportsReasoningEffort(entry.path("supportedReasoningEfforts"), effort)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean supportsReasoningEffort(JsonNode efforts, String effort) {
+        if (!efforts.isArray()) {
+            throw new CodexException(CodexFailure.PROTOCOL, "Model efforts are not an array");
+        }
+        for (var supported : efforts) {
+            if (effort.equals(requiredText(supported, "/reasoningEffort"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public boolean supportsSettings(String model, String effort) throws IOException {
         String cursor = null;
         var seenCursors = new HashSet<String>();
@@ -140,23 +165,8 @@ public class CodexAppServerClient {
             var params = cursor == null ? Map.<String, Object>of("limit", 100)
                     : Map.<String, Object>of("limit", 100, "cursor", cursor);
             var result = request("model/list", params);
-            var models = result.path("data");
-            if (!models.isArray()) {
-                throw new CodexException(CodexFailure.PROTOCOL, "Model catalog is not an array");
-            }
-            for (var entry : models) {
-                if (!model.equals(requiredText(entry, "/model"))) {
-                    continue;
-                }
-                var efforts = entry.path("supportedReasoningEfforts");
-                if (!efforts.isArray()) {
-                    throw new CodexException(CodexFailure.PROTOCOL, "Model efforts are not an array");
-                }
-                for (var supported : efforts) {
-                    if (effort.equals(requiredText(supported, "/reasoningEffort"))) {
-                        return true;
-                    }
-                }
+            if (supportsSettingsOnPage(result.path("data"), model, effort)) {
+                return true;
             }
             cursor = nullableText(result.path("nextCursor"));
             if (cursor != null && !seenCursors.add(cursor)) {
