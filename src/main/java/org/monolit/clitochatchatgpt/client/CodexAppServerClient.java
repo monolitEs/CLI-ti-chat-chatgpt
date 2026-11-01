@@ -30,6 +30,7 @@ public class CodexAppServerClient {
     private final AtomicLong requestIds = new AtomicLong();
 
     private static final String METHOD = "method";
+    private static final String MODEL = "model";
 
     private volatile Process process;
     private volatile BufferedReader stdout;
@@ -115,7 +116,7 @@ public class CodexAppServerClient {
         params.put("serviceName", "cli_to_chat_chatgpt");
         params.put("ephemeral", ephemeral);
         if (model != null) {
-            params.put("model", model);
+            params.put(MODEL, model);
             params.put("allowProviderModelFallback", false);
         }
         var result = request("thread/start", params);
@@ -132,7 +133,7 @@ public class CodexAppServerClient {
         if (!threadId.equals(requiredText(thread, "/id"))) {
             throw new CodexException(CodexFailure.PROTOCOL, "Read thread ID does not match");
         }
-        return new ModelSettingsResponse(null, null, nullableText(thread.path("model")),
+        return new ModelSettingsResponse(null, null, nullableText(thread.path(MODEL)),
                 nullableText(thread.path("reasoningEffort")));
     }
 
@@ -150,7 +151,7 @@ public class CodexAppServerClient {
     public ModelSettingsResponse updateSettings(String threadId, String model, String effort) throws IOException {
         // Pinned CLI 0.159.3 rejoins loaded threads without applying resume overrides.
         request("thread/unsubscribe", Map.of("threadId", threadId));
-        var resumed = request("thread/resume", Map.of("threadId", threadId, "model", model,
+        var resumed = request("thread/resume", Map.of("threadId", threadId, MODEL, model,
                 "config", Map.of("model_reasoning_effort", effort)));
         if (!threadId.equals(requiredText(resumed, "/thread/id"))) {
             throw new CodexException(CodexFailure.PROTOCOL, "Resumed thread ID does not match");

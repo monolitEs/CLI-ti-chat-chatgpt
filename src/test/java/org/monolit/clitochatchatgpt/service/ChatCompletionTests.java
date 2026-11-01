@@ -130,7 +130,8 @@ class ChatCompletionTests {
                 + "{\"id\":3,\"result\":" + response + "}\n");
         var client = process.client(JsonMapper.builder().build());
         var store = mock(ConversationStore.class);
-        assertThatThrownBy(() -> new ConversationService(client, store).complete("req", "m", MESSAGES))
+        var conversations = new ConversationService(client, store);
+        assertThatThrownBy(() -> conversations.complete("req", "m", MESSAGES))
                 .isInstanceOfSatisfying(CodexException.class, e -> assertThat(e.kind()).isEqualTo(CodexFailure.PROTOCOL));
         assertThat(process.isAlive()).isFalse();
         assertThat(process.requests()).doesNotContain("thread/inject_items", "turn/start");
@@ -147,7 +148,8 @@ class ChatCompletionTests {
                 """);
         var client = process.client(JsonMapper.builder().build());
         var store = mock(ConversationStore.class);
-        assertThatThrownBy(() -> new ConversationService(client, store).complete("req", "m", MESSAGES))
+        var conversations = new ConversationService(client, store);
+        assertThatThrownBy(() -> conversations.complete("req", "m", MESSAGES))
                 .isInstanceOf(CodexException.class);
         assertThat(process.isAlive()).isFalse();
         assertThat(process.requests()).doesNotContain("turn/start");
@@ -186,7 +188,8 @@ class ChatCompletionTests {
             case "turn" -> when(client.runTurn(anyString(), anyString(), anyString())).thenThrow(failure);
             default -> doThrow(failure).when(client).unsubscribeThread("t");
         }
-        assertThatThrownBy(() -> new ConversationService(client, store).complete("req", "m", MESSAGES))
+        var conversations = new ConversationService(client, store);
+        assertThatThrownBy(() -> conversations.complete("req", "m", MESSAGES))
                 .isSameAs(failure);
         verify(client).reset();
         verifyNoInteractions(store);
