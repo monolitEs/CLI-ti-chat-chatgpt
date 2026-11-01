@@ -2,6 +2,7 @@ package org.monolit.clitochatchatgpt.service;
 
 import jakarta.annotation.PreDestroy;
 import org.monolit.clitochatchatgpt.client.CodexAppServerClient;
+import org.monolit.clitochatchatgpt.model.dto.ChatMessage;
 import org.monolit.clitochatchatgpt.model.dto.ModelSettingsResponse;
 import org.monolit.clitochatchatgpt.model.enums.ChatFailure;
 import org.monolit.clitochatchatgpt.model.exceptions.ChatException;
@@ -11,6 +12,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -61,6 +63,10 @@ public class ChatService {
 
     public String chat(String requestId, String message, String conversationId) {
         return execute(() -> conversations.chat(requestId, message, conversationId));
+    }
+
+    public String complete(String requestId, String model, List<ChatMessage> messages) {
+        return execute(() -> conversations.complete(requestId, model, messages));
     }
 
     public ModelSettingsResponse getSettings(String requestId, String conversationId) {

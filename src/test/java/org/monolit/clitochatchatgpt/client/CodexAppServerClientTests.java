@@ -44,6 +44,12 @@ class CodexAppServerClientTests {
         assertThat(requests).contains("\"ephemeral\":true");
         assertThat(requests).contains("\"method\":\"turn/start\"");
         assertThat(requests).contains("\"text\":\"Hello\"");
+        var threadParams = requests.lines().map(JsonMapper.builder().build()::readTree)
+                .filter(request -> "thread/start".equals(request.path("method").asString()))
+                .findFirst().orElseThrow().path("params");
+        assertThat(threadParams.size()).isEqualTo(2);
+        assertThat(threadParams.has("model")).isFalse();
+        assertThat(threadParams.has("allowProviderModelFallback")).isFalse();
     }
 
     @Test

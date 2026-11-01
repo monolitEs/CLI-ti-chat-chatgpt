@@ -24,7 +24,8 @@ public class ChatRequestFilter extends OncePerRequestFilter {
         var path = request.getRequestURI();
         var base = request.getContextPath() + "/api/chat";
         return switch (request.getMethod()) {
-            case "POST" -> !base.equals(path);
+            case "POST" -> !base.equals(path)
+                    && !(request.getContextPath() + "/v1/chat/completions").equals(path);
             case "GET", "PUT" -> !(base + "/settings").equals(path);
             default -> true;
         };

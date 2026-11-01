@@ -2,6 +2,7 @@ package org.monolit.clitochatchatgpt.client;
 
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
+import org.monolit.clitochatchatgpt.model.dto.ChatMessage;
 import org.monolit.clitochatchatgpt.model.dto.ModelSettingsResponse;
 import org.monolit.clitochatchatgpt.model.enums.CodexFailure;
 import org.monolit.clitochatchatgpt.model.exceptions.CodexException;
@@ -14,6 +15,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -97,16 +99,32 @@ public class CodexAppServerClient {
         return requiredText(node, "");
     }
 
+    private static Map<String, Object> historyItem(ChatMessage message) {
+        var role = "system".equals(message.role()) ? "developer" : message.role();
+        var type = "assistant".equals(role) ? "output_text" : "input_text";
+        return Map.of("type", "message", "role", role,
+                "content", List.of(Map.of("type", type, "text", message.content())));
+    }
+
     public String startThread(boolean ephemeral) throws IOException {
-        var threadRequestId = nextId();
-        send(Map.of(
-                METHOD, "thread/start",
-                "id", threadRequestId,
-                "params", Map.of(
-                        "serviceName", "cli_to_chat_chatgpt",
-                        "ephemeral", ephemeral)));
-        var threadResponse = readResponse(threadRequestId);
-        return requiredText(threadResponse, "/result/thread/id");
+        return startThread(ephemeral, null);
+    }
+
+    public String startThread(boolean ephemeral, String model) throws IOException {
+        var params = new HashMap<String, Object>();
+        params.put("serviceName", "cli_to_chat_chatgpt");
+        params.put("ephemeral", ephemeral);
+        if (model != null) {
+            params.put("model", model);
+            params.put("allowProviderModelFallback", false);
+        }
+        var result = request("thread/start", params);
+        var threadId = requiredText(result, "/thread/id");
+        if (model != null && (!model.equals(requiredText(result, "/model"))
+                || result.path("thread").path("ephemeral").asBoolean() != ephemeral)) {
+            throw new CodexException(CodexFailure.PROTOCOL, "Completion thread settings do not match");
+        }
+        return threadId;
     }
 
     public ModelSettingsResponse readSettings(String threadId) throws IOException {
@@ -116,6 +134,17 @@ public class CodexAppServerClient {
         }
         return new ModelSettingsResponse(null, null, nullableText(thread.path("model")),
                 nullableText(thread.path("reasoningEffort")));
+    }
+
+    public void injectHistory(String threadId, List<ChatMessage> history) throws IOException {
+        if (!history.isEmpty()) {
+            var items = history.stream().map(CodexAppServerClient::historyItem).toList();
+            request("thread/inject_items", Map.of("threadId", threadId, "items", items));
+        }
+    }
+
+    public void unsubscribeThread(String threadId) throws IOException {
+        request("thread/unsubscribe", Map.of("threadId", threadId));
     }
 
     public ModelSettingsResponse updateSettings(String threadId, String model, String effort) throws IOException {
