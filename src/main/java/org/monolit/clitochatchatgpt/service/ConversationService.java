@@ -2,6 +2,7 @@ package org.monolit.clitochatchatgpt.service;
 
 import lombok.extern.slf4j.Slf4j;
 import org.monolit.clitochatchatgpt.client.CodexAppServerClient;
+import org.monolit.clitochatchatgpt.model.dto.ChatMessage;
 import org.monolit.clitochatchatgpt.model.dto.ModelSettingsResponse;
 import org.monolit.clitochatchatgpt.model.enums.ChatFailure;
 import org.monolit.clitochatchatgpt.model.enums.CodexFailure;
@@ -11,6 +12,7 @@ import org.monolit.clitochatchatgpt.persistence.ConversationStore;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.util.List;
 
 @Service
 @Slf4j
@@ -53,6 +55,23 @@ public class ConversationService {
         var threadId = codex.startThread(false);
         conversations.save(conversationId, threadId);
         return threadId;
+    }
+
+    public String complete(String requestId, String model, List<ChatMessage> messages) {
+        codex.ensureStarted();
+        try {
+            var threadId = codex.startThread(true, model);
+            codex.injectHistory(threadId, messages.subList(0, messages.size() - 1));
+            var answer = codex.runTurn(requestId, messages.getLast().content(), threadId);
+            codex.unsubscribeThread(threadId);
+            return answer;
+        } catch (IOException | RuntimeException exception) {
+            codex.reset();
+            if (exception instanceof CodexException codexException) {
+                throw codexException;
+            }
+            throw new CodexException(CodexFailure.UNAVAILABLE, "Completion failed", exception);
+        }
     }
 
     public ModelSettingsResponse getSettings(String requestId, String conversationId) {
